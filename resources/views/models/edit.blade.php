@@ -22,7 +22,7 @@
   <div class="row">
     <div class="col-md-8 col-md-offset-2">
 
-      {{ Form::open(['method' => 'POST', 'files' => true, 'class' => 'form-horizontal' ]) }}
+      {{ Form::open(['method' => 'POST', 'files' => true, 'class' => 'form-horizontal', 'enctype' => 'multipart/form-data' ]) }}
       <!-- CSRF Token -->
       <input type="hidden" name="_token" value="{{ csrf_token() }}" />
 
@@ -118,15 +118,6 @@
                     </div>
                 </div>
 
-                       <!-- Requestable -->
-                <div class="form-group">
-                    <div class="col-sm-offset-3 col-sm-10">
-                        <label>
-                            <input type="checkbox" value="1" name="requestable" id="requestable" class="minimal" {{ Input::old('requestable', $model->requestable) == '1' ? ' checked="checked"' : '' }}> {{ trans('admin/models/general.requestable') }}
-                        </label>
-                    </div>
-                </div>
-
                 <!-- Image -->
                 @if ($model->image)
                     <div class="form-group {{ $errors->has('image_delete') ? 'has-error' : '' }}">
@@ -144,6 +135,26 @@
                     <div class="col-md-5">
                         {{ Form::file('image') }}
                         {!! $errors->first('image', '<span class="alert-msg"><br>:message</span>') !!}
+                    </div>
+                </div>
+
+                <!-- Document -->
+                @if ($model->document)
+                    <div class="form-group {{ $errors->has('document_delete') ? 'has-error' : '' }}">
+                        <label class="col-md-3 control-label" for="document_delete">{{ trans('general.document_delete') }}</label>
+                        <div class="col-md-5">
+                            {{ Form::checkbox('document_delete') }}
+			    <a href="{{ config('app.url') }}/uploads/models/{{ $model->document }}" target="_NEW" />Uploaded Document ( {{ $model->document }} )</a>
+                            {!! $errors->first('document_delete', '<span class="alert-msg"><br>:message</span>') !!}
+                        </div>
+                    </div>
+                @endif
+
+                <div class="form-group {{ $errors->has('document') ? 'has-error' : '' }}">
+                    <label class="col-md-3 control-label" for="document">{{ trans('general.document_upload') }}</label>
+                    <div class="col-md-5">
+                        {{ Form::file('document') }}
+                        {!! $errors->first('document', '<span class="alert-msg"><br>:message</span>') !!}
                     </div>
                 </div>
 
