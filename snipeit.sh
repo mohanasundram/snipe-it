@@ -1,546 +1,4040 @@
-#!/bin/bash
-
-######################################################
-#           Snipe-It Install Script                  #
-#          Script created by Mike Tucker             #
-#            mtucker6784@gmail.com                   #
-# This script is just to help streamline the         #
-# install process for Debian and CentOS              #
-# based distributions. I assume you will be          #
-# installing as a subdomain on a fresh OS install.   #
-# Right now I'm not going to worry about SMTP setup  #
-#                                                    #
-# Feel free to modify, but please give               #
-# credit where it's due. Thanks!                     #
-######################################################
-
-# ensure running as root
-if [ "$(id -u)" != "0" ]; then
-  exec sudo "$0" "$@"
-fi
-#First things first, let's set some variables and find our distro.
-clear
-
-name="snipeit"
-si="Snipe-IT"
-hostname="$(hostname)"
-fqdn="$(hostname --fqdn)"
-ans=default
-hosts=/etc/hosts
-file=master.zip
-tmp=/tmp/$name
-fileName=snipe-it-master
-
-spin[0]="-"
-spin[1]="\\"
-spin[2]="|"
-spin[3]="/"
-
-rm -rf $tmp/
-mkdir $tmp
-
-# Debian/Ubuntu friendly f(x)s
-progress () {
-	while kill -0 $pid > /dev/null 2>&1
-        do
-        	for i in "${spin[@]}"
-                do
-                	if [ -e /proc/$pid ]; then
-                        echo -ne "\b$i"
-                        sleep .1
-                        else
-                        echo -ne "\n\b\n"
-                        fi
-                done
-        done
-}
-
-vhenvfile () {
-		sudo ls -al /etc/apache2/mods-enabled/rewrite.load >> /var/log/snipeit-install.log 2>&1
-		apachefile=/etc/apache2/sites-available/$name.conf
-		echo "* Create Virtual host for apache."
-		echo >> $apachefile "<VirtualHost *:80>"
-		echo >> $apachefile "ServerAdmin webmaster@localhost"
-		echo >> $apachefile "    <Directory $webdir/$name/public>"
-		echo >> $apachefile "        Require all granted"
-		echo >> $apachefile "        AllowOverride All"
-		echo >> $apachefile "   </Directory>"
-		echo >> $apachefile "    DocumentRoot $webdir/$name/public"
-		echo >> $apachefile "    ServerName $fqdn"
-		echo >> $apachefile "        ErrorLog /var/log/apache2/snipeIT.error.log"
-		echo >> $apachefile "        CustomLog /var/log/apache2/access.log combined"
-		echo >> $apachefile "</VirtualHost>"
-		echo >> $hosts "127.0.0.1 $hostname $fqdn"
-		a2ensite $name.conf >> /var/log/snipeit-install.log 2>&1
-
-		cat > $webdir/$name/.env <<-EOF
-		#Created By Snipe-it Installer
-		APP_TIMEZONE=$(cat /etc/timezone)
-		DB_HOST=localhost
-		DB_DATABASE=snipeit
-		DB_USERNAME=snipeit
-		DB_PASSWORD=$mysqluserpw
-		APP_URL=http://$fqdn
-		APP_KEY=$random32
-		EOF
-}
-
-perms () {
-		if [ $distro == "debian" ]; then
-		#Change permissions on directories
-		 chmod -R 755 $webdir/$name/storage
-		chmod -R 755 $webdir/$name/storage/private_uploads
-		chmod -R 755 $webdir/$name/public/uploads
-		chown -R www-data:www-data /var/www/$name
-		# echo "* Finished permission changes."
-		else
-		sudo chmod -R 755 $webdir/$name/storage
-		sudo chmod -R 755 $webdir/$name/storage/private_uploads
-		sudo chmod -R 755 $webdir/$name/public/uploads
-		sudo chown -R www-data:www-data /var/www/$name
-		fi
-}
-
-#CentOS Friendly f(x)s
-function isinstalled {
-  if yum list installed "$@" >/dev/null 2>&1; then
-    true
-  else
-    false
-  fi
-}
-
-if [ -f /etc/lsb-release ]; then
-    distro="$(lsb_release -s -i )"
-    version="$(lsb_release -s -r)"
-elif [ -f /etc/os-release ]; then
-    distro="$(. /etc/os-release && echo $ID)"
-    version="$(. /etc/os-release && echo $VERSION_ID)"
-#Order is important here.  If /etc/os-release and /etc/centos-release exist, we're on centos 7.
-#If only /etc/centos-release exist, we're on centos6(or earlier).  Centos-release is less parsable,
-#so lets assume that it's version 6 (Plus, who would be doing a new install of anything on centos5 at this point..)
-elif [ -f /etc/centos-release ]; then
-	distro="Centos"
-	version="6"
-else
-    distro="unsupported"
-fi
-
-
-echo "
-	   _____       _                  __________
-	  / ___/____  (_)___  ___        /  _/_  __/
-	  \__ \/ __ \/ / __ \/ _ \______ / /  / /
-	 ___/ / / / / / /_/ /  __/_____// /  / /
-	/____/_/ /_/_/ .___/\___/     /___/ /_/
-	            /_/
-"
-
-echo ""
-echo ""
-echo "  Welcome to Snipe-IT Inventory Installer for Centos, Debian and Ubuntu!"
-echo ""
-shopt -s nocasematch
-case $distro in
-        *Ubuntu*)
-                echo "  The installer has detected Ubuntu version $version as the OS."
-                distro=ubuntu
-                ;;
-		*Debian*)
-                echo "  The installer has detected Debian version $version as the OS."
-                distro=debian
-                ;;
-        *centos*|*redhat*)
-                echo "  The installer has detected $distro version $version as the OS."
-                distro=centos
-                ;;
-        *)
-                echo "  The installer was unable to determine your OS. Exiting for safety."
-                exit
-                ;;
-esac
-shopt -u nocasematch
-#Get your FQDN.
-
-echo -n "  Q. What is the FQDN of your server? ($fqdn): "
-read fqdn
-if [ -z "$fqdn" ]; then
-        fqdn="$(hostname --fqdn)"
-fi
-echo "     Setting to $fqdn"
-echo ""
-
-#Do you want to set your own passwords, or have me generate random ones?
-until [[ $ans == "yes" ]] || [[ $ans == "no" ]]; do
-echo -n "  Q. Do you want me to automatically create the snipe database user password? (y/n) "
-read setpw
-
-case $setpw in
-        [yY] | [yY][Ee][Ss] )
-                mysqluserpw="$(echo `< /dev/urandom tr -dc _A-Za-z-0-9 | head -c16`)"
-                ans="yes"
-                ;;
-        [nN] | [n|N][O|o] )
-                echo -n  "  Q. What do you want your snipeit user password to be?"
-                read -s mysqluserpw
-                echo ""
-		ans="no"
-                ;;
-        *) 	echo "  Invalid answer. Please type y or n"
-                ;;
-esac
-done
-
-#Snipe says we need a new 32bit key, so let's create one randomly and inject it into the file
-random32="$(echo `< /dev/urandom tr -dc _A-Za-z-0-9 | head -c32`)"
-
-#db_setup.sql will be injected to the database during install.
-#Again, this file should be removed, which will be a prompt at the end of the script.
-dbsetup=$tmp/db_setup.sql
-echo >> $dbsetup "CREATE DATABASE snipeit;"
-echo >> $dbsetup "GRANT ALL PRIVILEGES ON snipeit.* TO snipeit@localhost IDENTIFIED BY '$mysqluserpw';"
-
-#Let us make it so only root can read the file. Again, this isn't best practice, so please remove these after the install.
-chown root:root $dbsetup
-chmod 700 $dbsetup
-
-## TODO: Progress tracker on each step
-
-case $distro in
-	debian)
-		#####################################  Install for Debian ##############################################
-		#Update/upgrade Debian/Ubuntu repositories, get the latest version of git.
-		#Git clone snipeit, create vhost, edit hosts file, create .env file, mysql install
-		#composer install, set permissions, restart apache.
-		#BTW, Debian, I swear, you're such a pain.
-
-		webdir=/var/www
-		echo -e "\n* Updating Debian packages in the background... ${spin[0]}\n"
-		apt-get update >> /var/log/snipeit-install.log & pid=$! 2>&1
-		wait
-		apt-get upgrade >> /var/log/snipeit-install.log & pid=$! 2>&1
-		wait
-		echo -e "\n* Installing packages... ${spin[0]}\n"
-		echo -e "\n* Going to suppress more messages that you don't need to worry about. Please wait... ${spin[0]}"
-		DEBIAN_FRONTEND=noninteractive apt-get -y install mariadb-server mariadb-client apache2 git unzip php5 php5-mcrypt php5-curl php5-mysql php5-gd php5-ldap libapache2-mod-php5 curl >> /var/log/snipeit-install.log & pid=$! 2>&1
-		progress
-		wait
-		echo -e "\n* Cloning Snipeit, extracting to $webdir/$name..."
-		git clone https://github.com/snipe/snipe-it $webdir/$name >> /var/log/snipeit-install.log & pid=$! 2>&1
-		progress
-		php5enmod mcrypt >> /var/log/snipeit-install.log 2>&1
-		a2enmod rewrite >> /var/log/snipeit-install.log 2>&1
-		vhenvfile
-		wait
-		echo >> $hosts "127.0.0.1 $hostname $fqdn"
-		a2ensite $name.conf
-		echo -e "* Modify the Snipe-It files necessary for a production environment.\n* Securing Mysql"
-		# Have user set own root password when securing install
-		# and just set the snipeit database user at the beginning
-		/usr/bin/mysql_secure_installation
-		echo -e "* Creating Mysql Database and User.\n##  Please Input your MySQL/MariaDB root password: "
-		mysql -u root -p < $dbsetup
-		cd $webdir/$name/
-		curl -sS https://getcomposer.org/installer | php
-		php composer.phar install --no-dev --prefer-source
-		perms
-		service apache2 restart
-		;;
-	ubuntu)
-		#####################################  Install for Ubuntu  ##############################################
-		#Update/upgrade Debian/Ubuntu repositories, get the latest version of git.
-		#Git clone snipeit, create vhost, .env file, mysql install
-		#composer install, set permissions, restart apache.
-
-		webdir=/var/www
-		echo -ne "\n* Updating with apt-get update in the background... ${spin[0]}"
-		sudo apt-get update >> /var/log/snipeit-install.log & pid=$! 2>&1
-		progress
-		echo -ne "\n* Upgrading packages with apt-get upgrade in the background... ${spin[0]}"
-		sudo apt-get -y upgrade >> /var/log/snipeit-install.log & pid=$! 2>&1
-		progress
-		echo -ne "\n* Setting up LAMP in the background... ${spin[0]}\n"
-		sudo DEBIAN_FRONTEND=noninteractive apt-get install -y lamp-server^ >> /var/log/snipeit-install.log & pid=$! 2>&1 
-		progress
-		if [ "$version" == "16.04" ]; then
-			sudo apt-get install -y git unzip php php-mcrypt php-curl php-mysql php-gd php-ldap php-zip php-mbstring php-xml >> /var/log/snipeit-install.log & pid=$! 2>&1
-			progress
-			sudo phpenmod mcrypt >> /var/log/snipeit-install.log 2>&1
-			sudo phpenmod mbstring >> /var/log/snipeit-install 2>&1
-			sudo a2enmod rewrite >> /var/log/snipeit-install.log 2>&1
-		else
-			sudo apt-get install -y git unzip php5 php5-mcrypt php5-curl php5-mysql php5-gd php5-ldap >> /var/log/snipeit-install.log & pid=$! 2>&1
-			progress
-			sudo php5enmod mcrypt >> /var/log/snipeit-install.log 2>&1
-			sudo a2enmod rewrite >> /var/log/snipeit-install.log 2>&1
-		fi
-		echo -ne "\n* Cloning Snipeit, extracting to $webdir/$name... ${spin[0]}"
-		git clone https://github.com/snipe/snipe-it $webdir/$name >> /var/log/snipeit-install.log & pid=$! 2>&1
-		progress
-		vhenvfile
-		echo -e "* MySQL Phase next.\n"
-		/usr/bin/mysql_secure_installation
-		echo -e "* Creating MySQL Database and user.\n* Please Input your MySQL/MariaDB root password created in the previous step.: "
-		mysql -u root -p < $dbsetup
-		echo -e "\n* Securing Mysql\n* Installing and configuring composer"
-		cd $webdir/$name/
-		curl -sS https://getcomposer.org/installer  | php
-		php composer.phar install --no-dev --prefer-source
-		perms
-		service apache2 restart
-		;;
-	centos )
-	if [ "$version" == "6" ]; then
-		#####################################  Install for Centos/Redhat 6  ##############################################
-
-		webdir=/var/www/html
-		#Allow us to get the mysql engine
-		echo ""
-		echo "##  Adding IUS, epel-release and mariaDB repos.";
-		mariadbRepo=/etc/yum.repos.d/MariaDB.repo
-		touch $mariadbRepo
-		echo >> $mariadbRepo "[mariadb]"
-		echo >> $mariadbRepo "name = MariaDB"
-		echo >> $mariadbRepo "baseurl = http://yum.mariadb.org/10.0/centos6-amd64"
-		echo >> $mariadbRepo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB"
-		echo >> $mariadbRepo "gpgcheck=1"
-		echo >> $mariadbRepo "enable=1"
-
-		yum -y install wget epel-release >> /var/log/snipeit-install.log 2>&1
-		wget -P $tmp/ https://centos6.iuscommunity.org/ius-release.rpm >> /var/log/snipeit-install.log 2>&1
-		rpm -Uvh $tmp/ius-release*.rpm >> /var/log/snipeit-install.log 2>&1
-
-		#Install PHP and other needed stuff.
-		echo "##  Installing PHP and other needed stuff";
-		PACKAGES="httpd MariaDB-server git unzip php56u php56u-mysqlnd php56u-bcmath php56u-cli php56u-common php56u-embedded php56u-gd php56u-mbstring php56u-mcrypt php56u-ldap"
-
-		for p in $PACKAGES;do
-			if isinstalled $p;then
-				echo " ##" $p "Installed"
-			else
-				echo -n " ##" $p "Installing... "
-				yum -y install $p >> /var/log/snipeit-install.log 2>&1
-				echo "";
-			fi
-		done;
-
-		echo -e "\n##  Downloading Snipe-IT from github and putting it in the web directory.";
-
-		wget -P $tmp/ https://github.com/snipe/snipe-it/archive/$file >> /var/log/snipeit-install.log 2>&1
-		unzip -qo $tmp/$file -d $tmp/
-		cp -R $tmp/$fileName $webdir/$name
-
-		# Make mariaDB start on boot and restart the daemon
-		echo "##  Starting the mariaDB server.";
-		chkconfig mysql on
-		/sbin/service mysql start
-
-		echo "##  Securing mariaDB server.";
-		/usr/bin/mysql_secure_installation
-
-		echo "##  Creating MySQL Database/User."
-		echo "##  Please Input your MySQL/MariaDB root password: "
-		mysql -u root -p < $dbsetup
-
-		#Create the new virtual host in Apache and enable rewrite
-		echo "##  Creating the new virtual host in Apache.";
-		apachefile=/etc/httpd/conf.d/$name.conf
-
-		echo >> $apachefile ""
-		echo >> $apachefile ""
-		echo >> $apachefile ""
-		echo >> $apachefile "<VirtualHost *:80>"
-		echo >> $apachefile "ServerAdmin webmaster@localhost"
-		echo >> $apachefile "    <Directory $webdir/$name/public>"
-		echo >> $apachefile "        Allow From All"
-		echo >> $apachefile "        AllowOverride All"
-		echo >> $apachefile "        Options +Indexes"
-		echo >> $apachefile "   </Directory>"
-		echo >> $apachefile "    DocumentRoot $webdir/$name/public"
-		echo >> $apachefile "    ServerName $fqdn"
-		echo >> $apachefile "        ErrorLog /var/log/httpd/snipeIT.error.log"
-		echo >> $apachefile "        CustomLog /var/log/access.log combined"
-		echo >> $apachefile "</VirtualHost>"
-
-		echo "##  Setting up hosts file.";
-		echo >> $hosts "127.0.0.1 $hostname $fqdn"
-
-		# Make apache start on boot and restart the daemon
-		echo "##  Starting the apache server.";
-		chkconfig httpd on
-		/sbin/service httpd start
-
-		tzone=$(grep ZONE /etc/sysconfig/clock | tr -d '"' | sed 's/ZONE=//g');
-		echo "## Configuring .env file."
-
-		cat > $webdir/$name/.env <<-EOF
-		#Created By Snipe-it Installer
-		APP_TIMEZONE=$tzone
-		DB_HOST=localhost
-		DB_DATABASE=snipeit
-		DB_USERNAME=snipeit
-		DB_PASSWORD=$mysqluserpw
-		APP_URL=http://$fqdn
-		APP_KEY=$random32
-		DB_DUMP_PATH='/usr/bin'
-		EOF
-
-		echo "##  Configure composer"
-		cd $webdir/$name
-		curl -sS https://getcomposer.org/installer | php
-		php composer.phar install --no-dev --prefer-source
-
-		# Change permissions on directories
-		sudo chmod -R 755 $webdir/$name/storage
-		sudo chmod -R 755 $webdir/$name/public/uploads
-		sudo chown -R apache:apache $webdir/$name
-
-		#TODO detect if SELinux and firewall are enabled to decide what to do
-		#Add SELinux and firewall exception/rules. Youll have to allow 443 if you want ssl connectivity.
-		# chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/
-		# firewall-cmd --zone=public --add-port=80/tcp --permanent
-		# firewall-cmd --reload
-
-		service httpd restart
-
-	elif [ "$version" == "7" ]; then
-		#####################################  Install for Centos/Redhat 7  ##############################################
-
-		webdir=/var/www/html
-
-		#Allow us to get the mysql engine
-		echo -e "\n##  Add IUS, epel-release and mariaDB repos.";
-		yum -y install wget epel-release >> /var/log/snipeit-install.log 2>&1
-		wget -P $tmp/ https://centos7.iuscommunity.org/ius-release.rpm >> /var/log/snipeit-install.log 2>&1
-		rpm -Uvh $tmp/ius-release*.rpm >> /var/log/snipeit-install.log 2>&1
-
-		#Install PHP and other needed stuff.
-		echo "##  Installing PHP and other needed stuff";
-		PACKAGES="httpd mariadb-server git unzip php56u php56u-mysqlnd php56u-bcmath php56u-cli php56u-common php56u-embedded php56u-gd php56u-mbstring php56u-mcrypt php56u-ldap"
-
-		for p in $PACKAGES;do
-			if isinstalled $p;then
-				echo " ##" $p "Installed"
-			else
-				echo -n " ##" $p "Installing... "
-				yum -y install $p >> /var/log/snipeit-install.log 2>&1
-			echo "";
-			fi
-		done;
-
-		echo -e "\n##  Downloading Snipe-IT from github and put it in the web directory.";
-
-		wget -P $tmp/ https://github.com/snipe/snipe-it/archive/$file >> /var/log/snipeit-install.log 2>&1
-		unzip -qo $tmp/$file -d $tmp/
-		cp -R $tmp/$fileName $webdir/$name
-
-		# Make mariaDB start on boot and restart the daemon
-		echo "##  Starting the mariaDB server.";
-		systemctl enable mariadb.service
-		systemctl start mariadb.service
-
-		echo "##  Securing mariaDB server.";
-		echo "";
-		echo "";
-		/usr/bin/mysql_secure_installation
-
-		echo "##  Creating MySQL Database/User."
-		echo "##  Please Input your MySQL/MariaDB root password "
-		mysql -u root -p < $dbsetup
-
-		##TODO make sure the apachefile doesnt exist isnt already in there
-
-		#Create the new virtual host in Apache and enable rewrite
-		apachefile=/etc/httpd/conf.d/$name.conf
-
-		echo "##  Creating the new virtual host in Apache.";
-		echo >> $apachefile ""
-		echo >> $apachefile ""
-		echo >> $apachefile "LoadModule rewrite_module modules/mod_rewrite.so"
-		echo >> $apachefile ""
-		echo >> $apachefile "<VirtualHost *:80>"
-		echo >> $apachefile "ServerAdmin webmaster@localhost"
-		echo >> $apachefile "    <Directory $webdir/$name/public>"
-		echo >> $apachefile "        Allow From All"
-		echo >> $apachefile "        AllowOverride All"
-		echo >> $apachefile "        Options +Indexes"
-		echo >> $apachefile "   </Directory>"
-		echo >> $apachefile "    DocumentRoot $webdir/$name/public"
-		echo >> $apachefile "    ServerName $fqdn"
-		echo >> $apachefile "        ErrorLog /var/log/httpd/snipeIT.error.log"
-		echo >> $apachefile "        CustomLog /var/log/access.log combined"
-		echo >> $apachefile "</VirtualHost>"
-
-##TODO make sure this isnt already in there
-		echo "##  Setting up hosts file.";
-		echo >> $hosts "127.0.0.1 $hostname $fqdn"
-
-		echo "##  Starting the apache server.";
-		# Make apache start on boot and restart the daemon
-		systemctl enable httpd.service
-		systemctl restart httpd.service
-
-		tzone=$(timedatectl | gawk -F'[: ]' ' $9 ~ /zone/ {print $11}');
-		echo "## Configuring .env file."
-
-		cat > $webdir/$name/.env <<-EOF
-		#Created By Snipe-it Installer
-		APP_TIMEZONE=$tzone
-		DB_HOST=localhost
-		DB_DATABASE=snipeit
-		DB_USERNAME=snipeit
-		DB_PASSWORD=$mysqluserpw
-		APP_URL=http://$fqdn
-		APP_KEY=$random32
-		DB_DUMP_PATH='/usr/bin'
-		EOF
-
-		# Change permissions on directories
-
-
-		#Install / configure composer
-		cd $webdir/$name
-
-		curl -sS https://getcomposer.org/installer | php
-		php composer.phar install --no-dev --prefer-source
-
-		sudo chmod -R 755 $webdir/$name/storage
-		sudo chmod -R 755 $webdir/$name/storage/private_uploads
-		sudo chmod -R 755 $webdir/$name/public/uploads
-		sudo chown -R apache:apache $webdir/$name
-    		#Check if SELinux is enforcing
-		if [ $(getenforce) == "Enforcing" ]; then
-	        #Required for ldap integration
-		      setsebool -P httpd_can_connect_ldap on
-		      #Sets SELinux context type so that scripts running in the web server process are allowed read/write access
-		      sudo chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/
-		fi
-
-		# Make SeLinux happy
-		sudo chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/
-#TODO detect if SELinux and firewall are enabled to decide what to do
-		#Add SELinux and firewall exception/rules. Youll have to allow 443 if you want ssl connectivity.
-		# chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/
-		# firewall-cmd --zone=public --add-port=80/tcp --permanent
-		# firewall-cmd --reload
-
-		systemctl restart httpd.service
-
-	else
-		echo "Unable to Handle Centos Version #.  Version Found: " $version
-		return 1
-	fi
-esac
-
-echo ""
-echo "  ***If you want mail capabilities, edit $webdir/$name/.env and edit based on .env.example***"
-echo ""
-echo "  ***Open http://$fqdn to login to Snipe-IT.***"
-echo ""
-echo ""
-echo "* Cleaning up..."
-rm -f snipeit.sh
-rm -f install.sh
-rm -rf $tmp/
-echo "* Finished!"
-sleep 1
+
+
+
+
+<!DOCTYPE html>
+<html lang="en" class="">
+  <head prefix="og: http://ogp.me/ns# fb: http://ogp.me/ns/fb# object: http://ogp.me/ns/object# article: http://ogp.me/ns/article# profile: http://ogp.me/ns/profile#">
+    <meta charset='utf-8'>
+    
+
+    <link crossorigin="anonymous" href="https://assets-cdn.github.com/assets/frameworks-4a5c7916bfb3223d1960676d72c09227ca0125f101d75b915eaba2df57516f4c.css" media="all" rel="stylesheet" />
+    <link crossorigin="anonymous" href="https://assets-cdn.github.com/assets/github-20fc569e1dc3957174a8cd8ce907463047799972deabb2f13b2642d7ff9e083d.css" media="all" rel="stylesheet" />
+    
+    
+    <link crossorigin="anonymous" href="https://assets-cdn.github.com/assets/site-f6ce114ac3bc145f575863b4a6dbdf65e924bccb184fc4d4a4f5a09819b4173d.css" media="all" rel="stylesheet" />
+    
+
+    <link as="script" href="https://assets-cdn.github.com/assets/frameworks-2c76cc192ef357ffd1604a67307c1426cfd7513a720b1a87d1f53eb24a928308.js" rel="preload" />
+    
+    <link as="script" href="https://assets-cdn.github.com/assets/github-e3e0a00b0eebdb706d96a48372bbe7b1c39467c3d6a985bedfad6ae75fddd20e.js" rel="preload" />
+
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="Content-Language" content="en">
+    <meta name="viewport" content="width=device-width">
+    
+    <title>snipe-it/snipeit.sh at develop · snipe/snipe-it · GitHub</title>
+    <link rel="search" type="application/opensearchdescription+xml" href="/opensearch.xml" title="GitHub">
+    <link rel="fluid-icon" href="https://github.com/fluidicon.png" title="GitHub">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="apple-touch-icon" sizes="57x57" href="/apple-touch-icon-57x57.png">
+    <link rel="apple-touch-icon" sizes="60x60" href="/apple-touch-icon-60x60.png">
+    <link rel="apple-touch-icon" sizes="72x72" href="/apple-touch-icon-72x72.png">
+    <link rel="apple-touch-icon" sizes="76x76" href="/apple-touch-icon-76x76.png">
+    <link rel="apple-touch-icon" sizes="114x114" href="/apple-touch-icon-114x114.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/apple-touch-icon-120x120.png">
+    <link rel="apple-touch-icon" sizes="144x144" href="/apple-touch-icon-144x144.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/apple-touch-icon-152x152.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180x180.png">
+    <meta property="fb:app_id" content="1401488693436528">
+
+      <meta content="https://avatars0.githubusercontent.com/u/197404?v=3&amp;s=400" name="twitter:image:src" /><meta content="@github" name="twitter:site" /><meta content="summary" name="twitter:card" /><meta content="snipe/snipe-it" name="twitter:title" /><meta content="snipe-it - A free open source IT asset/license management system built in PHP on Laravel 5.2 and Bootstrap 3. " name="twitter:description" />
+      <meta content="https://avatars0.githubusercontent.com/u/197404?v=3&amp;s=400" property="og:image" /><meta content="GitHub" property="og:site_name" /><meta content="object" property="og:type" /><meta content="snipe/snipe-it" property="og:title" /><meta content="https://github.com/snipe/snipe-it" property="og:url" /><meta content="snipe-it - A free open source IT asset/license management system built in PHP on Laravel 5.2 and Bootstrap 3. " property="og:description" />
+      <meta name="browser-stats-url" content="https://api.github.com/_private/browser/stats">
+    <meta name="browser-errors-url" content="https://api.github.com/_private/browser/errors">
+    <link rel="assets" href="https://assets-cdn.github.com/">
+    
+    <meta name="pjax-timeout" content="1000">
+    
+    <meta name="request-id" content="61408702:308B:F120286:57E99782" data-pjax-transient>
+
+    <meta name="msapplication-TileImage" content="/windows-tile.png">
+    <meta name="msapplication-TileColor" content="#ffffff">
+    <meta name="selected-link" value="repo_source" data-pjax-transient>
+
+    <meta name="google-site-verification" content="KT5gs8h0wvaagLKAVWq8bbeNwnZZK1r1XQysX3xurLU">
+<meta name="google-site-verification" content="ZzhVyEFwb7w3e0-uOTltm8Jsck2F5StVihD0exw2fsA">
+    <meta name="google-analytics" content="UA-3769691-2">
+
+<meta content="collector.githubapp.com" name="octolytics-host" /><meta content="github" name="octolytics-app-id" /><meta content="61408702:308B:F120286:57E99782" name="octolytics-dimension-request_id" />
+<meta content="/&lt;user-name&gt;/&lt;repo-name&gt;/blob/show" data-pjax-transient="true" name="analytics-location" />
+
+
+
+  <meta class="js-ga-set" name="dimension1" content="Logged Out">
+
+
+
+        <meta name="hostname" content="github.com">
+    <meta name="user-login" content="">
+
+        <meta name="expected-hostname" content="github.com">
+      <meta name="js-proxy-site-detection-payload" content="OGM0OTA0OWZlOGYxYjU3NDQ1YTg2NjYzZTk3OWQ2Yzg0YWQ3ODBjMWY0MGU5M2UzNTk3ZDljZDc3ODk1OWU4Y3x7InJlbW90ZV9hZGRyZXNzIjoiOTcuNjQuMTM1LjIiLCJyZXF1ZXN0X2lkIjoiNjE0MDg3MDI6MzA4QjpGMTIwMjg2OjU3RTk5NzgyIiwidGltZXN0YW1wIjoxNDc0OTI2NDY3fQ==">
+
+
+      <link rel="mask-icon" href="https://assets-cdn.github.com/pinned-octocat.svg" color="#4078c0">
+      <link rel="icon" type="image/x-icon" href="https://assets-cdn.github.com/favicon.ico">
+
+    <meta name="html-safe-nonce" content="db811093cb2b5ea72336309b1bf36a93ff3e11f6">
+    <meta content="687b7a9a8c45d24d2a010e30e18e97004e60c59a" name="form-nonce" />
+
+    <meta http-equiv="x-pjax-version" content="a8aae367e9a1e4f726ccd7e1a1a7837e">
+    
+
+      
+  <meta name="description" content="snipe-it - A free open source IT asset/license management system built in PHP on Laravel 5.2 and Bootstrap 3. ">
+  <meta name="go-import" content="github.com/snipe/snipe-it git https://github.com/snipe/snipe-it.git">
+
+  <meta content="197404" name="octolytics-dimension-user_id" /><meta content="snipe" name="octolytics-dimension-user_login" /><meta content="14346979" name="octolytics-dimension-repository_id" /><meta content="snipe/snipe-it" name="octolytics-dimension-repository_nwo" /><meta content="true" name="octolytics-dimension-repository_public" /><meta content="false" name="octolytics-dimension-repository_is_fork" /><meta content="14346979" name="octolytics-dimension-repository_network_root_id" /><meta content="snipe/snipe-it" name="octolytics-dimension-repository_network_root_nwo" />
+  <link href="https://github.com/snipe/snipe-it/commits/develop.atom" rel="alternate" title="Recent Commits to snipe-it:develop" type="application/atom+xml">
+
+
+      <link rel="canonical" href="https://github.com/snipe/snipe-it/blob/develop/snipeit.sh" data-pjax-transient>
+  </head>
+
+
+  <body class="logged-out  env-production  vis-public page-blob">
+    <div id="js-pjax-loader-bar" class="pjax-loader-bar"><div class="progress"></div></div>
+    <a href="#start-of-content" tabindex="1" class="accessibility-aid js-skip-to-content">Skip to content</a>
+
+    
+    
+    
+
+
+
+          <header class="site-header js-details-container" role="banner">
+  <div class="container-responsive">
+    <a class="header-logo-invertocat" href="https://github.com/" aria-label="Homepage" data-ga-click="(Logged out) Header, go to homepage, icon:logo-wordmark">
+      <svg aria-hidden="true" class="octicon octicon-mark-github" height="32" version="1.1" viewBox="0 0 16 16" width="32"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+
+    <button class="btn-link float-right site-header-toggle js-details-target" type="button" aria-label="Toggle navigation">
+      <svg aria-hidden="true" class="octicon octicon-three-bars" height="24" version="1.1" viewBox="0 0 12 16" width="18"><path d="M11.41 9H.59C0 9 0 8.59 0 8c0-.59 0-1 .59-1H11.4c.59 0 .59.41.59 1 0 .59 0 1-.59 1h.01zm0-4H.59C0 5 0 4.59 0 4c0-.59 0-1 .59-1H11.4c.59 0 .59.41.59 1 0 .59 0 1-.59 1h.01zM.59 11H11.4c.59 0 .59.41.59 1 0 .59 0 1-.59 1H.59C0 13 0 12.59 0 12c0-.59 0-1 .59-1z"></path></svg>
+    </button>
+
+    <div class="site-header-menu">
+      <nav class="site-header-nav site-header-nav-main">
+        <a href="/personal" class="js-selected-navigation-item nav-item nav-item-personal" data-ga-click="Header, click, Nav menu - item:personal" data-selected-links="/personal /personal">
+          Personal
+</a>        <a href="/open-source" class="js-selected-navigation-item nav-item nav-item-opensource" data-ga-click="Header, click, Nav menu - item:opensource" data-selected-links="/open-source /open-source">
+          Open source
+</a>        <a href="/business" class="js-selected-navigation-item nav-item nav-item-business" data-ga-click="Header, click, Nav menu - item:business" data-selected-links="/business /business/partners /business/features /business/customers /business">
+          Business
+</a>        <a href="/explore" class="js-selected-navigation-item nav-item nav-item-explore" data-ga-click="Header, click, Nav menu - item:explore" data-selected-links="/explore /trending /trending/developers /integrations /integrations/feature/code /integrations/feature/collaborate /integrations/feature/ship /explore">
+          Explore
+</a>      </nav>
+
+      <div class="site-header-actions">
+            <a class="btn btn-primary site-header-actions-btn" href="/join?source=header-repo" data-ga-click="(Logged out) Header, clicked Sign up, text:sign-up">Sign up</a>
+          <a class="btn site-header-actions-btn mr-2" href="/login?return_to=%2Fsnipe%2Fsnipe-it%2Fblob%2Fdevelop%2Fsnipeit.sh" data-ga-click="(Logged out) Header, clicked Sign in, text:sign-in">Sign in</a>
+      </div>
+
+        <nav class="site-header-nav site-header-nav-secondary">
+          <a class="nav-item" href="/pricing">Pricing</a>
+          <a class="nav-item" href="/blog">Blog</a>
+          <a class="nav-item" href="https://help.github.com">Support</a>
+          <a class="nav-item header-search-link" href="https://github.com/search">Search GitHub</a>
+              <div class="header-search scoped-search site-scoped-search js-site-search" role="search">
+  <!-- </textarea> --><!-- '"` --><form accept-charset="UTF-8" action="/snipe/snipe-it/search" class="js-site-search-form" data-scoped-search-url="/snipe/snipe-it/search" data-unscoped-search-url="/search" method="get"><div style="margin:0;padding:0;display:inline"><input name="utf8" type="hidden" value="&#x2713;" /></div>
+    <label class="form-control header-search-wrapper js-chromeless-input-container">
+      <div class="header-search-scope">This repository</div>
+      <input type="text"
+        class="form-control header-search-input js-site-search-focus js-site-search-field is-clearable"
+        data-hotkey="s"
+        name="q"
+        placeholder="Search"
+        aria-label="Search this repository"
+        data-unscoped-placeholder="Search GitHub"
+        data-scoped-placeholder="Search"
+        autocapitalize="off">
+    </label>
+</form></div>
+
+        </nav>
+    </div>
+  </div>
+</header>
+
+
+
+    <div id="start-of-content" class="accessibility-aid"></div>
+
+      <div id="js-flash-container">
+</div>
+
+
+    <div role="main">
+        <div itemscope itemtype="http://schema.org/SoftwareSourceCode">
+    <div id="js-repo-pjax-container" data-pjax-container>
+      
+<div class="pagehead repohead instapaper_ignore readability-menu experiment-repo-nav">
+  <div class="container repohead-details-container">
+
+    
+
+<ul class="pagehead-actions">
+
+  <li>
+      <a href="/login?return_to=%2Fsnipe%2Fsnipe-it"
+    class="btn btn-sm btn-with-count tooltipped tooltipped-n"
+    aria-label="You must be signed in to watch a repository" rel="nofollow">
+    <svg aria-hidden="true" class="octicon octicon-eye" height="16" version="1.1" viewBox="0 0 16 16" width="16"><path d="M8.06 2C3 2 0 8 0 8s3 6 8.06 6C13 14 16 8 16 8s-3-6-7.94-6zM8 12c-2.2 0-4-1.78-4-4 0-2.2 1.8-4 4-4 2.22 0 4 1.8 4 4 0 2.22-1.78 4-4 4zm2-4c0 1.11-.89 2-2 2-1.11 0-2-.89-2-2 0-1.11.89-2 2-2 1.11 0 2 .89 2 2z"></path></svg>
+    Watch
+  </a>
+  <a class="social-count" href="/snipe/snipe-it/watchers"
+     aria-label="141 users are watching this repository">
+    141
+  </a>
+
+  </li>
+
+  <li>
+      <a href="/login?return_to=%2Fsnipe%2Fsnipe-it"
+    class="btn btn-sm btn-with-count tooltipped tooltipped-n"
+    aria-label="You must be signed in to star a repository" rel="nofollow">
+    <svg aria-hidden="true" class="octicon octicon-star" height="16" version="1.1" viewBox="0 0 14 16" width="14"><path d="M14 6l-4.9-.64L7 1 4.9 5.36 0 6l3.6 3.26L2.67 14 7 11.67 11.33 14l-.93-4.74z"></path></svg>
+    Star
+  </a>
+
+    <a class="social-count js-social-count" href="/snipe/snipe-it/stargazers"
+      aria-label="923 users starred this repository">
+      923
+    </a>
+
+  </li>
+
+  <li>
+      <a href="/login?return_to=%2Fsnipe%2Fsnipe-it"
+        class="btn btn-sm btn-with-count tooltipped tooltipped-n"
+        aria-label="You must be signed in to fork a repository" rel="nofollow">
+        <svg aria-hidden="true" class="octicon octicon-repo-forked" height="16" version="1.1" viewBox="0 0 10 16" width="10"><path d="M8 1a1.993 1.993 0 0 0-1 3.72V6L5 8 3 6V4.72A1.993 1.993 0 0 0 2 1a1.993 1.993 0 0 0-1 3.72V6.5l3 3v1.78A1.993 1.993 0 0 0 5 15a1.993 1.993 0 0 0 1-3.72V9.5l3-3V4.72A1.993 1.993 0 0 0 8 1zM2 4.2C1.34 4.2.8 3.65.8 3c0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2zm3 10c-.66 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2zm3-10c-.66 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2z"></path></svg>
+        Fork
+      </a>
+
+    <a href="/snipe/snipe-it/network" class="social-count"
+       aria-label="457 users are forked this repository">
+      457
+    </a>
+  </li>
+</ul>
+
+    <h1 class="public ">
+  <svg aria-hidden="true" class="octicon octicon-repo" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M4 9H3V8h1v1zm0-3H3v1h1V6zm0-2H3v1h1V4zm0-2H3v1h1V2zm8-1v12c0 .55-.45 1-1 1H6v2l-1.5-1.5L3 16v-2H1c-.55 0-1-.45-1-1V1c0-.55.45-1 1-1h10c.55 0 1 .45 1 1zm-1 10H1v2h2v-1h3v1h5v-2zm0-10H2v9h9V1z"></path></svg>
+  <span class="author" itemprop="author"><a href="/snipe" class="url fn" rel="author">snipe</a></span><!--
+--><span class="path-divider">/</span><!--
+--><strong itemprop="name"><a href="/snipe/snipe-it" data-pjax="#js-repo-pjax-container">snipe-it</a></strong>
+
+</h1>
+
+  </div>
+  <div class="container">
+    
+<nav class="reponav js-repo-nav js-sidenav-container-pjax"
+     itemscope
+     itemtype="http://schema.org/BreadcrumbList"
+     role="navigation"
+     data-pjax="#js-repo-pjax-container">
+
+  <span itemscope itemtype="http://schema.org/ListItem" itemprop="itemListElement">
+    <a href="/snipe/snipe-it/tree/develop" aria-selected="true" class="js-selected-navigation-item selected reponav-item" data-hotkey="g c" data-selected-links="repo_source repo_downloads repo_commits repo_releases repo_tags repo_branches /snipe/snipe-it/tree/develop" itemprop="url">
+      <svg aria-hidden="true" class="octicon octicon-code" height="16" version="1.1" viewBox="0 0 14 16" width="14"><path d="M9.5 3L8 4.5 11.5 8 8 11.5 9.5 13 14 8 9.5 3zm-5 0L0 8l4.5 5L6 11.5 2.5 8 6 4.5 4.5 3z"></path></svg>
+      <span itemprop="name">Code</span>
+      <meta itemprop="position" content="1">
+</a>  </span>
+
+    <span itemscope itemtype="http://schema.org/ListItem" itemprop="itemListElement">
+      <a href="/snipe/snipe-it/issues" class="js-selected-navigation-item reponav-item" data-hotkey="g i" data-selected-links="repo_issues repo_labels repo_milestones /snipe/snipe-it/issues" itemprop="url">
+        <svg aria-hidden="true" class="octicon octicon-issue-opened" height="16" version="1.1" viewBox="0 0 14 16" width="14"><path d="M7 2.3c3.14 0 5.7 2.56 5.7 5.7s-2.56 5.7-5.7 5.7A5.71 5.71 0 0 1 1.3 8c0-3.14 2.56-5.7 5.7-5.7zM7 1C3.14 1 0 4.14 0 8s3.14 7 7 7 7-3.14 7-7-3.14-7-7-7zm1 3H6v5h2V4zm0 6H6v2h2v-2z"></path></svg>
+        <span itemprop="name">Issues</span>
+        <span class="counter">446</span>
+        <meta itemprop="position" content="2">
+</a>    </span>
+
+  <span itemscope itemtype="http://schema.org/ListItem" itemprop="itemListElement">
+    <a href="/snipe/snipe-it/pulls" class="js-selected-navigation-item reponav-item" data-hotkey="g p" data-selected-links="repo_pulls /snipe/snipe-it/pulls" itemprop="url">
+      <svg aria-hidden="true" class="octicon octicon-git-pull-request" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M11 11.28V5c-.03-.78-.34-1.47-.94-2.06C9.46 2.35 8.78 2.03 8 2H7V0L4 3l3 3V4h1c.27.02.48.11.69.31.21.2.3.42.31.69v6.28A1.993 1.993 0 0 0 10 15a1.993 1.993 0 0 0 1-3.72zm-1 2.92c-.66 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2zM4 3c0-1.11-.89-2-2-2a1.993 1.993 0 0 0-1 3.72v6.56A1.993 1.993 0 0 0 2 15a1.993 1.993 0 0 0 1-3.72V4.72c.59-.34 1-.98 1-1.72zm-.8 10c0 .66-.55 1.2-1.2 1.2-.65 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2zM2 4.2C1.34 4.2.8 3.65.8 3c0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2z"></path></svg>
+      <span itemprop="name">Pull requests</span>
+      <span class="counter">6</span>
+      <meta itemprop="position" content="3">
+</a>  </span>
+
+  <a href="/snipe/snipe-it/projects" class="js-selected-navigation-item reponav-item" data-selected-links="repo_projects new_repo_project repo_project /snipe/snipe-it/projects">
+    <svg class="octicon" aria-hidden="true" version="1.1" width="15" height="16" viewBox="0 0 15 16">
+      <path d="M1 15h13V1H1v14zM15 1v14a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V1a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1zm-4.41 11h1.82c.59 0 .59-.41.59-1V3c0-.59 0-1-.59-1h-1.82C10 2 10 2.41 10 3v8c0 .59 0 1 .59 1zm-4-2h1.82C9 10 9 9.59 9 9V3c0-.59 0-1-.59-1H6.59C6 2 6 2.41 6 3v6c0 .59 0 1 .59 1zM2 13V3c0-.59 0-1 .59-1h1.82C5 2 5 2.41 5 3v10c0 .59 0 1-.59 1H2.59C2 14 2 13.59 2 13z"></path>
+    </svg>
+    Projects
+    <span class="counter">0</span>
+</a>
+    <a href="/snipe/snipe-it/wiki" class="js-selected-navigation-item reponav-item" data-hotkey="g w" data-selected-links="repo_wiki /snipe/snipe-it/wiki">
+      <svg aria-hidden="true" class="octicon octicon-book" height="16" version="1.1" viewBox="0 0 16 16" width="16"><path d="M3 5h4v1H3V5zm0 3h4V7H3v1zm0 2h4V9H3v1zm11-5h-4v1h4V5zm0 2h-4v1h4V7zm0 2h-4v1h4V9zm2-6v9c0 .55-.45 1-1 1H9.5l-1 1-1-1H2c-.55 0-1-.45-1-1V3c0-.55.45-1 1-1h5.5l1 1 1-1H15c.55 0 1 .45 1 1zm-8 .5L7.5 3H2v9h6V3.5zm7-.5H9.5l-.5.5V12h6V3z"></path></svg>
+      Wiki
+</a>
+
+  <a href="/snipe/snipe-it/pulse" class="js-selected-navigation-item reponav-item" data-selected-links="pulse /snipe/snipe-it/pulse">
+    <svg aria-hidden="true" class="octicon octicon-pulse" height="16" version="1.1" viewBox="0 0 14 16" width="14"><path d="M11.5 8L8.8 5.4 6.6 8.5 5.5 1.6 2.38 8H0v2h3.6l.9-1.8.9 5.4L9 8.5l1.6 1.5H14V8z"></path></svg>
+    Pulse
+</a>
+  <a href="/snipe/snipe-it/graphs" class="js-selected-navigation-item reponav-item" data-selected-links="repo_graphs repo_contributors /snipe/snipe-it/graphs">
+    <svg aria-hidden="true" class="octicon octicon-graph" height="16" version="1.1" viewBox="0 0 16 16" width="16"><path d="M16 14v1H0V0h1v14h15zM5 13H3V8h2v5zm4 0H7V3h2v10zm4 0h-2V6h2v7z"></path></svg>
+    Graphs
+</a>
+
+</nav>
+
+  </div>
+</div>
+
+<div class="container new-discussion-timeline experiment-repo-nav">
+  <div class="repository-content">
+
+    
+
+<a href="/snipe/snipe-it/blob/40f00665b39b0c9ae4a4a9dc6a5e01b648dafb16/snipeit.sh" class="d-none js-permalink-shortcut" data-hotkey="y">Permalink</a>
+
+<!-- blob contrib key: blob_contributors:v21:1bb5fc6b5285ed50bd25338b48df8641 -->
+
+<div class="file-navigation js-zeroclipboard-container">
+  
+<div class="select-menu branch-select-menu js-menu-container js-select-menu float-left">
+  <button class="btn btn-sm select-menu-button js-menu-target css-truncate" data-hotkey="w"
+    
+    type="button" aria-label="Switch branches or tags" tabindex="0" aria-haspopup="true">
+    <i>Branch:</i>
+    <span class="js-select-button css-truncate-target">develop</span>
+  </button>
+
+  <div class="select-menu-modal-holder js-menu-content js-navigation-container" data-pjax aria-hidden="true">
+
+    <div class="select-menu-modal">
+      <div class="select-menu-header">
+        <svg aria-label="Close" class="octicon octicon-x js-menu-close" height="16" role="img" version="1.1" viewBox="0 0 12 16" width="12"><path d="M7.48 8l3.75 3.75-1.48 1.48L6 9.48l-3.75 3.75-1.48-1.48L4.52 8 .77 4.25l1.48-1.48L6 6.52l3.75-3.75 1.48 1.48z"></path></svg>
+        <span class="select-menu-title">Switch branches/tags</span>
+      </div>
+
+      <div class="select-menu-filters">
+        <div class="select-menu-text-filter">
+          <input type="text" aria-label="Filter branches/tags" id="context-commitish-filter-field" class="form-control js-filterable-field js-navigation-enable" placeholder="Filter branches/tags">
+        </div>
+        <div class="select-menu-tabs">
+          <ul>
+            <li class="select-menu-tab">
+              <a href="#" data-tab-filter="branches" data-filter-placeholder="Filter branches/tags" class="js-select-menu-tab" role="tab">Branches</a>
+            </li>
+            <li class="select-menu-tab">
+              <a href="#" data-tab-filter="tags" data-filter-placeholder="Find a tag…" class="js-select-menu-tab" role="tab">Tags</a>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="select-menu-list select-menu-tab-bucket js-select-menu-tab-bucket" data-tab-filter="branches" role="menu">
+
+        <div data-filterable-for="context-commitish-filter-field" data-filterable-type="substring">
+
+
+            <a class="select-menu-item js-navigation-item js-navigation-open selected"
+               href="/snipe/snipe-it/blob/develop/snipeit.sh"
+               data-name="develop"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                develop
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/gh-pages/snipeit.sh"
+               data-name="gh-pages"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                gh-pages
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/laravel-5.3-shift/snipeit.sh"
+               data-name="laravel-5.3-shift"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                laravel-5.3-shift
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/master/snipeit.sh"
+               data-name="master"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                master
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/v2-develop/snipeit.sh"
+               data-name="v2-develop"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                v2-develop
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/v2-master/snipeit.sh"
+               data-name="v2-master"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                v2-master
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/v3-master/snipeit.sh"
+               data-name="v3-master"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                v3-master
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/v3/snipeit.sh"
+               data-name="v3"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                v3
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+               href="/snipe/snipe-it/blob/very_preliminary_sso_openidc/snipeit.sh"
+               data-name="very_preliminary_sso_openidc"
+               data-skip-pjax="true"
+               rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target js-select-menu-filter-text">
+                very_preliminary_sso_openidc
+              </span>
+            </a>
+        </div>
+
+          <div class="select-menu-no-results">Nothing to show</div>
+      </div>
+
+      <div class="select-menu-list select-menu-tab-bucket js-select-menu-tab-bucket" data-tab-filter="tags">
+        <div data-filterable-for="context-commitish-filter-field" data-filterable-type="substring">
+
+
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.5.0-beta/snipeit.sh"
+              data-name="v3.5.0-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.5.0-beta">
+                v3.5.0-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.4.0-beta/snipeit.sh"
+              data-name="v3.4.0-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.4.0-beta">
+                v3.4.0-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.4.0-alpha/snipeit.sh"
+              data-name="v3.4.0-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.4.0-alpha">
+                v3.4.0-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.4/snipeit.sh"
+              data-name="v3.4"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.4">
+                v3.4
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.3.0/snipeit.sh"
+              data-name="v3.3.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.3.0">
+                v3.3.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.3.0-beta/snipeit.sh"
+              data-name="v3.3.0-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.3.0-beta">
+                v3.3.0-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.1.0/snipeit.sh"
+              data-name="v3.1.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.1.0">
+                v3.1.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0.0-beta/snipeit.sh"
+              data-name="v3.0.0-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0.0-beta">
+                v3.0.0-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0/snipeit.sh"
+              data-name="v3.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0">
+                v3.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0-beta.3/snipeit.sh"
+              data-name="v3.0-beta.3"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0-beta.3">
+                v3.0-beta.3
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0-beta.2/snipeit.sh"
+              data-name="v3.0-beta.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0-beta.2">
+                v3.0-beta.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0-beta.1/snipeit.sh"
+              data-name="v3.0-beta.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0-beta.1">
+                v3.0-beta.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0-alpha2/snipeit.sh"
+              data-name="v3.0-alpha2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0-alpha2">
+                v3.0-alpha2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v3.0-alpha/snipeit.sh"
+              data-name="v3.0-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v3.0-alpha">
+                v3.0-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.1.2/snipeit.sh"
+              data-name="v2.1.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.1.2">
+                v2.1.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.1.1/snipeit.sh"
+              data-name="v2.1.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.1.1">
+                v2.1.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.1.0/snipeit.sh"
+              data-name="v2.1.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.1.0">
+                v2.1.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.1.0-pre/snipeit.sh"
+              data-name="v2.1.0-pre"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.1.0-pre">
+                v2.1.0-pre
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.6/snipeit.sh"
+              data-name="v2.0.6"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.6">
+                v2.0.6
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.5/snipeit.sh"
+              data-name="v2.0.5"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.5">
+                v2.0.5
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.5-pre/snipeit.sh"
+              data-name="v2.0.5-pre"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.5-pre">
+                v2.0.5-pre
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.4/snipeit.sh"
+              data-name="v2.0.4"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.4">
+                v2.0.4
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.3/snipeit.sh"
+              data-name="v2.0.3"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.3">
+                v2.0.3
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.2/snipeit.sh"
+              data-name="v2.0.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.2">
+                v2.0.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0.1/snipeit.sh"
+              data-name="v2.0.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0.1">
+                v2.0.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0/snipeit.sh"
+              data-name="v2.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0">
+                v2.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0-pre-beta2/snipeit.sh"
+              data-name="v2.0-pre-beta2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0-pre-beta2">
+                v2.0-pre-beta2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0-pre-beta/snipeit.sh"
+              data-name="v2.0-pre-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0-pre-beta">
+                v2.0-pre-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0-beta/snipeit.sh"
+              data-name="v2.0-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0-beta">
+                v2.0-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v2.0-RC-1/snipeit.sh"
+              data-name="v2.0-RC-1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v2.0-RC-1">
+                v2.0-RC-1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.11/snipeit.sh"
+              data-name="v1.2.11"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.11">
+                v1.2.11
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.10/snipeit.sh"
+              data-name="v1.2.10"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.10">
+                v1.2.10
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.9/snipeit.sh"
+              data-name="v1.2.9"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.9">
+                v1.2.9
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.8/snipeit.sh"
+              data-name="v1.2.8"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.8">
+                v1.2.8
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.7/snipeit.sh"
+              data-name="v1.2.7"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.7">
+                v1.2.7
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.7-master/snipeit.sh"
+              data-name="v1.2.7-master"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.7-master">
+                v1.2.7-master
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.7-beta/snipeit.sh"
+              data-name="v1.2.7-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.7-beta">
+                v1.2.7-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.6.1/snipeit.sh"
+              data-name="v1.2.6.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.6.1">
+                v1.2.6.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.6/snipeit.sh"
+              data-name="v1.2.6"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.6">
+                v1.2.6
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.6-beta/snipeit.sh"
+              data-name="v1.2.6-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.6-beta">
+                v1.2.6-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.5/snipeit.sh"
+              data-name="v1.2.5"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.5">
+                v1.2.5
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.4/snipeit.sh"
+              data-name="v1.2.4"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.4">
+                v1.2.4
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.4-beta/snipeit.sh"
+              data-name="v1.2.4-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.4-beta">
+                v1.2.4-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.3/snipeit.sh"
+              data-name="v1.2.3"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.3">
+                v1.2.3
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.3-beta/snipeit.sh"
+              data-name="v1.2.3-beta"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.3-beta">
+                v1.2.3-beta
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.2/snipeit.sh"
+              data-name="v1.2.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.2">
+                v1.2.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.1/snipeit.sh"
+              data-name="v1.2.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.1">
+                v1.2.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2.0/snipeit.sh"
+              data-name="v1.2.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2.0">
+                v1.2.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.2/snipeit.sh"
+              data-name="v1.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.2">
+                v1.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.1/snipeit.sh"
+              data-name="v1.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.1">
+                v1.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v1.0/snipeit.sh"
+              data-name="v1.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v1.0">
+                v1.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.11-alpha/snipeit.sh"
+              data-name="v0.3.11-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.11-alpha">
+                v0.3.11-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.10-alpha/snipeit.sh"
+              data-name="v0.3.10-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.10-alpha">
+                v0.3.10-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.9-alpha/snipeit.sh"
+              data-name="v0.3.9-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.9-alpha">
+                v0.3.9-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.8-alpha/snipeit.sh"
+              data-name="v0.3.8-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.8-alpha">
+                v0.3.8-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.7-alpha/snipeit.sh"
+              data-name="v0.3.7-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.7-alpha">
+                v0.3.7-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.6-alpha/snipeit.sh"
+              data-name="v.0.3.6-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.6-alpha">
+                v.0.3.6-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.5-alpha/snipeit.sh"
+              data-name="v.0.3.5-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.5-alpha">
+                v.0.3.5-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.4-alpha/snipeit.sh"
+              data-name="v.0.3.4-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.4-alpha">
+                v.0.3.4-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.3-alpha/snipeit.sh"
+              data-name="v.0.3.3-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.3-alpha">
+                v.0.3.3-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.2-alpha/snipeit.sh"
+              data-name="v.0.3.2-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.2-alpha">
+                v.0.3.2-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v.0.3.1-alpha/snipeit.sh"
+              data-name="v.0.3.1-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v.0.3.1-alpha">
+                v.0.3.1-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.3.0-alpha/snipeit.sh"
+              data-name="v0.3.0-alpha"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.3.0-alpha">
+                v0.3.0-alpha
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.2.0/snipeit.sh"
+              data-name="v0.2.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.2.0">
+                v0.2.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.1.2/snipeit.sh"
+              data-name="v0.1.2"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.1.2">
+                v0.1.2
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.1.1/snipeit.sh"
+              data-name="v0.1.1"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.1.1">
+                v0.1.1
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/v0.1.0/snipeit.sh"
+              data-name="v0.1.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="v0.1.0">
+                v0.1.0
+              </span>
+            </a>
+            <a class="select-menu-item js-navigation-item js-navigation-open "
+              href="/snipe/snipe-it/tree/3.2.0/snipeit.sh"
+              data-name="3.2.0"
+              data-skip-pjax="true"
+              rel="nofollow">
+              <svg aria-hidden="true" class="octicon octicon-check select-menu-item-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M12 5l-8 8-4-4 1.5-1.5L4 10l6.5-6.5z"></path></svg>
+              <span class="select-menu-item-text css-truncate-target" title="3.2.0">
+                3.2.0
+              </span>
+            </a>
+        </div>
+
+        <div class="select-menu-no-results">Nothing to show</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+  <div class="BtnGroup float-right">
+    <a href="/snipe/snipe-it/find/develop"
+          class="js-pjax-capture-input btn btn-sm BtnGroup-item"
+          data-pjax
+          data-hotkey="t">
+      Find file
+    </a>
+    <button aria-label="Copy file path to clipboard" class="js-zeroclipboard btn btn-sm BtnGroup-item tooltipped tooltipped-s" data-copied-hint="Copied!" type="button">Copy path</button>
+  </div>
+  <div class="breadcrumb js-zeroclipboard-target">
+    <span class="repo-root js-repo-root"><span class="js-path-segment"><a href="/snipe/snipe-it/tree/develop"><span>snipe-it</span></a></span></span><span class="separator">/</span><strong class="final-path">snipeit.sh</strong>
+  </div>
+</div>
+
+
+  <div class="commit-tease">
+      <span class="float-right">
+        <a class="commit-tease-sha" href="/snipe/snipe-it/commit/03ee6b8f91e0cd4e298e4d39876dc435659d7e61" data-pjax>
+          03ee6b8
+        </a>
+        <relative-time datetime="2016-09-26T21:11:43Z">Sep 26, 2016</relative-time>
+      </span>
+      <div>
+        <img alt="@tiagom62" class="avatar" height="20" src="https://avatars2.githubusercontent.com/u/10802313?v=3&amp;s=40" width="20" />
+        <a href="/tiagom62" class="user-mention" rel="contributor">tiagom62</a>
+          <a href="/snipe/snipe-it/commit/03ee6b8f91e0cd4e298e4d39876dc435659d7e61" class="message" data-pjax="true" title="SELinux and iptables update for installer (#2674)
+
+* detect SELinux
+
+detect SELinux is enforcing and set required security policies for
+CentOS 7
+
+* Centos 6 iptables
+
+allow http/https if iptables is running">SELinux and iptables update for installer (</a><a href="https://github.com/snipe/snipe-it/pull/2674" class="issue-link js-issue-link" data-url="https://github.com/snipe/snipe-it/issues/2674" data-id="179049247" data-error-text="Failed to load issue title" data-permission-text="Issue title is private">#2674</a><a href="/snipe/snipe-it/commit/03ee6b8f91e0cd4e298e4d39876dc435659d7e61" class="message" data-pjax="true" title="SELinux and iptables update for installer (#2674)
+
+* detect SELinux
+
+detect SELinux is enforcing and set required security policies for
+CentOS 7
+
+* Centos 6 iptables
+
+allow http/https if iptables is running">)</a>
+      </div>
+
+    <div class="commit-tease-contributors">
+      <button type="button" class="btn-link muted-link contributors-toggle" data-facebox="#blob_contributors_box">
+        <strong>4</strong>
+         contributors
+      </button>
+          <a class="avatar-link tooltipped tooltipped-s" aria-label="dmeltzer" href="/snipe/snipe-it/commits/develop/snipeit.sh?author=dmeltzer"><img alt="@dmeltzer" class="avatar" height="20" src="https://avatars3.githubusercontent.com/u/3803132?v=3&amp;s=40" width="20" /> </a>
+    <a class="avatar-link tooltipped tooltipped-s" aria-label="mtucker6784" href="/snipe/snipe-it/commits/develop/snipeit.sh?author=mtucker6784"><img alt="@mtucker6784" class="avatar" height="20" src="https://avatars0.githubusercontent.com/u/1609106?v=3&amp;s=40" width="20" /> </a>
+    <a class="avatar-link tooltipped tooltipped-s" aria-label="snipe" href="/snipe/snipe-it/commits/develop/snipeit.sh?author=snipe"><img alt="@snipe" class="avatar" height="20" src="https://avatars1.githubusercontent.com/u/197404?v=3&amp;s=40" width="20" /> </a>
+    <a class="avatar-link tooltipped tooltipped-s" aria-label="tiagom62" href="/snipe/snipe-it/commits/develop/snipeit.sh?author=tiagom62"><img alt="@tiagom62" class="avatar" height="20" src="https://avatars2.githubusercontent.com/u/10802313?v=3&amp;s=40" width="20" /> </a>
+
+
+    </div>
+
+    <div id="blob_contributors_box" style="display:none">
+      <h2 class="facebox-header" data-facebox-id="facebox-header">Users who have contributed to this file</h2>
+      <ul class="facebox-user-list" data-facebox-id="facebox-description">
+          <li class="facebox-user-list-item">
+            <img alt="@dmeltzer" height="24" src="https://avatars1.githubusercontent.com/u/3803132?v=3&amp;s=48" width="24" />
+            <a href="/dmeltzer">dmeltzer</a>
+          </li>
+          <li class="facebox-user-list-item">
+            <img alt="@mtucker6784" height="24" src="https://avatars2.githubusercontent.com/u/1609106?v=3&amp;s=48" width="24" />
+            <a href="/mtucker6784">mtucker6784</a>
+          </li>
+          <li class="facebox-user-list-item">
+            <img alt="@snipe" height="24" src="https://avatars3.githubusercontent.com/u/197404?v=3&amp;s=48" width="24" />
+            <a href="/snipe">snipe</a>
+          </li>
+          <li class="facebox-user-list-item">
+            <img alt="@tiagom62" height="24" src="https://avatars0.githubusercontent.com/u/10802313?v=3&amp;s=48" width="24" />
+            <a href="/tiagom62">tiagom62</a>
+          </li>
+      </ul>
+    </div>
+  </div>
+
+<div class="file">
+  <div class="file-header">
+  <div class="file-actions">
+
+    <div class="BtnGroup">
+      <a href="/snipe/snipe-it/raw/develop/snipeit.sh" class="btn btn-sm BtnGroup-item" id="raw-url">Raw</a>
+        <a href="/snipe/snipe-it/blame/develop/snipeit.sh" class="btn btn-sm js-update-url-with-hash BtnGroup-item">Blame</a>
+      <a href="/snipe/snipe-it/commits/develop/snipeit.sh" class="btn btn-sm BtnGroup-item" rel="nofollow">History</a>
+    </div>
+
+
+        <button type="button" class="btn-octicon disabled tooltipped tooltipped-nw"
+          aria-label="You must be signed in to make or propose changes">
+          <svg aria-hidden="true" class="octicon octicon-pencil" height="16" version="1.1" viewBox="0 0 14 16" width="14"><path d="M0 12v3h3l8-8-3-3-8 8zm3 2H1v-2h1v1h1v1zm10.3-9.3L12 6 9 3l1.3-1.3a.996.996 0 0 1 1.41 0l1.59 1.59c.39.39.39 1.02 0 1.41z"></path></svg>
+        </button>
+        <button type="button" class="btn-octicon btn-octicon-danger disabled tooltipped tooltipped-nw"
+          aria-label="You must be signed in to make or propose changes">
+          <svg aria-hidden="true" class="octicon octicon-trashcan" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M11 2H9c0-.55-.45-1-1-1H5c-.55 0-1 .45-1 1H2c-.55 0-1 .45-1 1v1c0 .55.45 1 1 1v9c0 .55.45 1 1 1h7c.55 0 1-.45 1-1V5c.55 0 1-.45 1-1V3c0-.55-.45-1-1-1zm-1 12H3V5h1v8h1V5h1v8h1V5h1v8h1V5h1v9zm1-10H2V3h9v1z"></path></svg>
+        </button>
+  </div>
+
+  <div class="file-info">
+      <span class="file-mode" title="File mode">executable file</span>
+      <span class="file-info-divider"></span>
+      653 lines (548 sloc)
+      <span class="file-info-divider"></span>
+    21.9 KB
+  </div>
+</div>
+
+  
+
+  <div itemprop="text" class="blob-wrapper data type-shell">
+      <table class="highlight tab-size js-file-line-container" data-tab-size="8">
+      <tr>
+        <td id="L1" class="blob-num js-line-number" data-line-number="1"></td>
+        <td id="LC1" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#!/bin/bash</span></td>
+      </tr>
+      <tr>
+        <td id="L2" class="blob-num js-line-number" data-line-number="2"></td>
+        <td id="LC2" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L3" class="blob-num js-line-number" data-line-number="3"></td>
+        <td id="LC3" class="blob-code blob-code-inner js-file-line"><span class="pl-c">######################################################</span></td>
+      </tr>
+      <tr>
+        <td id="L4" class="blob-num js-line-number" data-line-number="4"></td>
+        <td id="LC4" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#           Snipe-It Install Script                  #</span></td>
+      </tr>
+      <tr>
+        <td id="L5" class="blob-num js-line-number" data-line-number="5"></td>
+        <td id="LC5" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#          Script created by Mike Tucker             #</span></td>
+      </tr>
+      <tr>
+        <td id="L6" class="blob-num js-line-number" data-line-number="6"></td>
+        <td id="LC6" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#            mtucker6784@gmail.com                   #</span></td>
+      </tr>
+      <tr>
+        <td id="L7" class="blob-num js-line-number" data-line-number="7"></td>
+        <td id="LC7" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># This script is just to help streamline the         #</span></td>
+      </tr>
+      <tr>
+        <td id="L8" class="blob-num js-line-number" data-line-number="8"></td>
+        <td id="LC8" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># install process for Debian and CentOS              #</span></td>
+      </tr>
+      <tr>
+        <td id="L9" class="blob-num js-line-number" data-line-number="9"></td>
+        <td id="LC9" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># based distributions. I assume you will be          #</span></td>
+      </tr>
+      <tr>
+        <td id="L10" class="blob-num js-line-number" data-line-number="10"></td>
+        <td id="LC10" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># installing as a subdomain on a fresh OS install.   #</span></td>
+      </tr>
+      <tr>
+        <td id="L11" class="blob-num js-line-number" data-line-number="11"></td>
+        <td id="LC11" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># Right now I&#39;m not going to worry about SMTP setup  #</span></td>
+      </tr>
+      <tr>
+        <td id="L12" class="blob-num js-line-number" data-line-number="12"></td>
+        <td id="LC12" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#                                                    #</span></td>
+      </tr>
+      <tr>
+        <td id="L13" class="blob-num js-line-number" data-line-number="13"></td>
+        <td id="LC13" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># Feel free to modify, but please give               #</span></td>
+      </tr>
+      <tr>
+        <td id="L14" class="blob-num js-line-number" data-line-number="14"></td>
+        <td id="LC14" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># credit where it&#39;s due. Thanks!                     #</span></td>
+      </tr>
+      <tr>
+        <td id="L15" class="blob-num js-line-number" data-line-number="15"></td>
+        <td id="LC15" class="blob-code blob-code-inner js-file-line"><span class="pl-c">######################################################</span></td>
+      </tr>
+      <tr>
+        <td id="L16" class="blob-num js-line-number" data-line-number="16"></td>
+        <td id="LC16" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L17" class="blob-num js-line-number" data-line-number="17"></td>
+        <td id="LC17" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># ensure running as root</span></td>
+      </tr>
+      <tr>
+        <td id="L18" class="blob-num js-line-number" data-line-number="18"></td>
+        <td id="LC18" class="blob-code blob-code-inner js-file-line"><span class="pl-k">if</span> [ <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>id -u<span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span> <span class="pl-k">!=</span> <span class="pl-s"><span class="pl-pds">&quot;</span>0<span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L19" class="blob-num js-line-number" data-line-number="19"></td>
+        <td id="LC19" class="blob-code blob-code-inner js-file-line">  <span class="pl-c1">exec</span> sudo <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$0</span><span class="pl-pds">&quot;</span></span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$@</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L20" class="blob-num js-line-number" data-line-number="20"></td>
+        <td id="LC20" class="blob-code blob-code-inner js-file-line"><span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L21" class="blob-num js-line-number" data-line-number="21"></td>
+        <td id="LC21" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#First things first, let&#39;s set some variables and find our distro.</span></td>
+      </tr>
+      <tr>
+        <td id="L22" class="blob-num js-line-number" data-line-number="22"></td>
+        <td id="LC22" class="blob-code blob-code-inner js-file-line">clear</td>
+      </tr>
+      <tr>
+        <td id="L23" class="blob-num js-line-number" data-line-number="23"></td>
+        <td id="LC23" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L24" class="blob-num js-line-number" data-line-number="24"></td>
+        <td id="LC24" class="blob-code blob-code-inner js-file-line">name=<span class="pl-s"><span class="pl-pds">&quot;</span>snipeit<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L25" class="blob-num js-line-number" data-line-number="25"></td>
+        <td id="LC25" class="blob-code blob-code-inner js-file-line">si=<span class="pl-s"><span class="pl-pds">&quot;</span>Snipe-IT<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L26" class="blob-num js-line-number" data-line-number="26"></td>
+        <td id="LC26" class="blob-code blob-code-inner js-file-line">hostname=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>hostname<span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L27" class="blob-num js-line-number" data-line-number="27"></td>
+        <td id="LC27" class="blob-code blob-code-inner js-file-line">fqdn=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>hostname --fqdn<span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L28" class="blob-num js-line-number" data-line-number="28"></td>
+        <td id="LC28" class="blob-code blob-code-inner js-file-line">ans=default</td>
+      </tr>
+      <tr>
+        <td id="L29" class="blob-num js-line-number" data-line-number="29"></td>
+        <td id="LC29" class="blob-code blob-code-inner js-file-line">hosts=/etc/hosts</td>
+      </tr>
+      <tr>
+        <td id="L30" class="blob-num js-line-number" data-line-number="30"></td>
+        <td id="LC30" class="blob-code blob-code-inner js-file-line">file=master.zip</td>
+      </tr>
+      <tr>
+        <td id="L31" class="blob-num js-line-number" data-line-number="31"></td>
+        <td id="LC31" class="blob-code blob-code-inner js-file-line">tmp=/tmp/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L32" class="blob-num js-line-number" data-line-number="32"></td>
+        <td id="LC32" class="blob-code blob-code-inner js-file-line">fileName=snipe-it-master</td>
+      </tr>
+      <tr>
+        <td id="L33" class="blob-num js-line-number" data-line-number="33"></td>
+        <td id="LC33" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L34" class="blob-num js-line-number" data-line-number="34"></td>
+        <td id="LC34" class="blob-code blob-code-inner js-file-line">spin[0]=<span class="pl-s"><span class="pl-pds">&quot;</span>-<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L35" class="blob-num js-line-number" data-line-number="35"></td>
+        <td id="LC35" class="blob-code blob-code-inner js-file-line">spin[1]=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-cce">\\</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L36" class="blob-num js-line-number" data-line-number="36"></td>
+        <td id="LC36" class="blob-code blob-code-inner js-file-line">spin[2]=<span class="pl-s"><span class="pl-pds">&quot;</span>|<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L37" class="blob-num js-line-number" data-line-number="37"></td>
+        <td id="LC37" class="blob-code blob-code-inner js-file-line">spin[3]=<span class="pl-s"><span class="pl-pds">&quot;</span>/<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L38" class="blob-num js-line-number" data-line-number="38"></td>
+        <td id="LC38" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L39" class="blob-num js-line-number" data-line-number="39"></td>
+        <td id="LC39" class="blob-code blob-code-inner js-file-line">rm -rf <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L40" class="blob-num js-line-number" data-line-number="40"></td>
+        <td id="LC40" class="blob-code blob-code-inner js-file-line">mkdir <span class="pl-smi">$tmp</span></td>
+      </tr>
+      <tr>
+        <td id="L41" class="blob-num js-line-number" data-line-number="41"></td>
+        <td id="LC41" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L42" class="blob-num js-line-number" data-line-number="42"></td>
+        <td id="LC42" class="blob-code blob-code-inner js-file-line"><span class="pl-c"># Debian/Ubuntu friendly f(x)</span></td>
+      </tr>
+      <tr>
+        <td id="L43" class="blob-num js-line-number" data-line-number="43"></td>
+        <td id="LC43" class="blob-code blob-code-inner js-file-line"><span class="pl-en">progress</span> () {</td>
+      </tr>
+      <tr>
+        <td id="L44" class="blob-num js-line-number" data-line-number="44"></td>
+        <td id="LC44" class="blob-code blob-code-inner js-file-line">	<span class="pl-k">while</span> <span class="pl-c1">kill</span> -0 <span class="pl-smi">$pid</span> <span class="pl-k">&gt;</span> /dev/null <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L45" class="blob-num js-line-number" data-line-number="45"></td>
+        <td id="LC45" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">do</span></td>
+      </tr>
+      <tr>
+        <td id="L46" class="blob-num js-line-number" data-line-number="46"></td>
+        <td id="LC46" class="blob-code blob-code-inner js-file-line">        	<span class="pl-k">for</span> <span class="pl-smi">i</span> <span class="pl-k">in</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">${spin[@]}</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L47" class="blob-num js-line-number" data-line-number="47"></td>
+        <td id="LC47" class="blob-code blob-code-inner js-file-line">                <span class="pl-k">do</span></td>
+      </tr>
+      <tr>
+        <td id="L48" class="blob-num js-line-number" data-line-number="48"></td>
+        <td id="LC48" class="blob-code blob-code-inner js-file-line">                	<span class="pl-k">if</span> [ <span class="pl-k">-e</span> /proc/<span class="pl-smi">$pid</span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L49" class="blob-num js-line-number" data-line-number="49"></td>
+        <td id="LC49" class="blob-code blob-code-inner js-file-line">                        <span class="pl-c1">echo</span> -ne <span class="pl-s"><span class="pl-pds">&quot;</span>\b<span class="pl-smi">$i</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L50" class="blob-num js-line-number" data-line-number="50"></td>
+        <td id="LC50" class="blob-code blob-code-inner js-file-line">                        sleep .1</td>
+      </tr>
+      <tr>
+        <td id="L51" class="blob-num js-line-number" data-line-number="51"></td>
+        <td id="LC51" class="blob-code blob-code-inner js-file-line">                        <span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L52" class="blob-num js-line-number" data-line-number="52"></td>
+        <td id="LC52" class="blob-code blob-code-inner js-file-line">                        <span class="pl-c1">echo</span> -ne <span class="pl-s"><span class="pl-pds">&quot;</span>\n\n<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L53" class="blob-num js-line-number" data-line-number="53"></td>
+        <td id="LC53" class="blob-code blob-code-inner js-file-line">                        <span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L54" class="blob-num js-line-number" data-line-number="54"></td>
+        <td id="LC54" class="blob-code blob-code-inner js-file-line">                <span class="pl-k">done</span></td>
+      </tr>
+      <tr>
+        <td id="L55" class="blob-num js-line-number" data-line-number="55"></td>
+        <td id="LC55" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">done</span></td>
+      </tr>
+      <tr>
+        <td id="L56" class="blob-num js-line-number" data-line-number="56"></td>
+        <td id="LC56" class="blob-code blob-code-inner js-file-line">}</td>
+      </tr>
+      <tr>
+        <td id="L57" class="blob-num js-line-number" data-line-number="57"></td>
+        <td id="LC57" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L58" class="blob-num js-line-number" data-line-number="58"></td>
+        <td id="LC58" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L59" class="blob-num js-line-number" data-line-number="59"></td>
+        <td id="LC59" class="blob-code blob-code-inner js-file-line"><span class="pl-k">function</span> <span class="pl-en">isinstalled</span> {</td>
+      </tr>
+      <tr>
+        <td id="L60" class="blob-num js-line-number" data-line-number="60"></td>
+        <td id="LC60" class="blob-code blob-code-inner js-file-line">  <span class="pl-k">if</span> yum list installed <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$@</span><span class="pl-pds">&quot;</span></span> <span class="pl-k">&gt;</span>/dev/null <span class="pl-k">2&gt;&amp;1</span><span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L61" class="blob-num js-line-number" data-line-number="61"></td>
+        <td id="LC61" class="blob-code blob-code-inner js-file-line">    <span class="pl-c1">true</span></td>
+      </tr>
+      <tr>
+        <td id="L62" class="blob-num js-line-number" data-line-number="62"></td>
+        <td id="LC62" class="blob-code blob-code-inner js-file-line">  <span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L63" class="blob-num js-line-number" data-line-number="63"></td>
+        <td id="LC63" class="blob-code blob-code-inner js-file-line">    <span class="pl-c1">false</span></td>
+      </tr>
+      <tr>
+        <td id="L64" class="blob-num js-line-number" data-line-number="64"></td>
+        <td id="LC64" class="blob-code blob-code-inner js-file-line">  <span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L65" class="blob-num js-line-number" data-line-number="65"></td>
+        <td id="LC65" class="blob-code blob-code-inner js-file-line">}</td>
+      </tr>
+      <tr>
+        <td id="L66" class="blob-num js-line-number" data-line-number="66"></td>
+        <td id="LC66" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L67" class="blob-num js-line-number" data-line-number="67"></td>
+        <td id="LC67" class="blob-code blob-code-inner js-file-line"><span class="pl-k">if</span> [ <span class="pl-k">-f</span> /etc/lsb-release ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L68" class="blob-num js-line-number" data-line-number="68"></td>
+        <td id="LC68" class="blob-code blob-code-inner js-file-line">    distro=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>lsb_release -s -i <span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L69" class="blob-num js-line-number" data-line-number="69"></td>
+        <td id="LC69" class="blob-code blob-code-inner js-file-line">    version=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>lsb_release -s -r<span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L70" class="blob-num js-line-number" data-line-number="70"></td>
+        <td id="LC70" class="blob-code blob-code-inner js-file-line"><span class="pl-k">elif</span> [ <span class="pl-k">-f</span> /etc/os-release ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L71" class="blob-num js-line-number" data-line-number="71"></td>
+        <td id="LC71" class="blob-code blob-code-inner js-file-line">    distro=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>. /etc/os-release <span class="pl-k">&amp;&amp;</span> <span class="pl-c1">echo</span> <span class="pl-smi">$ID</span><span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L72" class="blob-num js-line-number" data-line-number="72"></td>
+        <td id="LC72" class="blob-code blob-code-inner js-file-line">    version=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>. /etc/os-release <span class="pl-k">&amp;&amp;</span> <span class="pl-c1">echo</span> <span class="pl-smi">$VERSION_ID</span><span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L73" class="blob-num js-line-number" data-line-number="73"></td>
+        <td id="LC73" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Order is important here.  If /etc/os-release and /etc/centos-release exist, we&#39;re on centos 7.</span></td>
+      </tr>
+      <tr>
+        <td id="L74" class="blob-num js-line-number" data-line-number="74"></td>
+        <td id="LC74" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#If only /etc/centos-release exist, we&#39;re on centos6(or earlier).  Centos-release is less parsable,</span></td>
+      </tr>
+      <tr>
+        <td id="L75" class="blob-num js-line-number" data-line-number="75"></td>
+        <td id="LC75" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#so lets assume that it&#39;s version 6 (Plus, who would be doing a new install of anything on centos5 at this point..)</span></td>
+      </tr>
+      <tr>
+        <td id="L76" class="blob-num js-line-number" data-line-number="76"></td>
+        <td id="LC76" class="blob-code blob-code-inner js-file-line"><span class="pl-k">elif</span> [ <span class="pl-k">-f</span> /etc/centos-release ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L77" class="blob-num js-line-number" data-line-number="77"></td>
+        <td id="LC77" class="blob-code blob-code-inner js-file-line">	distro=<span class="pl-s"><span class="pl-pds">&quot;</span>Centos<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L78" class="blob-num js-line-number" data-line-number="78"></td>
+        <td id="LC78" class="blob-code blob-code-inner js-file-line">	version=<span class="pl-s"><span class="pl-pds">&quot;</span>6<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L79" class="blob-num js-line-number" data-line-number="79"></td>
+        <td id="LC79" class="blob-code blob-code-inner js-file-line"><span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L80" class="blob-num js-line-number" data-line-number="80"></td>
+        <td id="LC80" class="blob-code blob-code-inner js-file-line">    distro=<span class="pl-s"><span class="pl-pds">&quot;</span>unsupported<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L81" class="blob-num js-line-number" data-line-number="81"></td>
+        <td id="LC81" class="blob-code blob-code-inner js-file-line"><span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L82" class="blob-num js-line-number" data-line-number="82"></td>
+        <td id="LC82" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L83" class="blob-num js-line-number" data-line-number="83"></td>
+        <td id="LC83" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L84" class="blob-num js-line-number" data-line-number="84"></td>
+        <td id="LC84" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L85" class="blob-num js-line-number" data-line-number="85"></td>
+        <td id="LC85" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	   _____       _                  __________</span></td>
+      </tr>
+      <tr>
+        <td id="L86" class="blob-num js-line-number" data-line-number="86"></td>
+        <td id="LC86" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	  / ___/____  (_)___  ___        /  _/_  __/</span></td>
+      </tr>
+      <tr>
+        <td id="L87" class="blob-num js-line-number" data-line-number="87"></td>
+        <td id="LC87" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	  \__ \/ __ \/ / __ \/ _ \______ / /  / /</span></td>
+      </tr>
+      <tr>
+        <td id="L88" class="blob-num js-line-number" data-line-number="88"></td>
+        <td id="LC88" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	 ___/ / / / / / /_/ /  __/_____// /  / /</span></td>
+      </tr>
+      <tr>
+        <td id="L89" class="blob-num js-line-number" data-line-number="89"></td>
+        <td id="LC89" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	/____/_/ /_/_/ .___/\___/     /___/ /_/</span></td>
+      </tr>
+      <tr>
+        <td id="L90" class="blob-num js-line-number" data-line-number="90"></td>
+        <td id="LC90" class="blob-code blob-code-inner js-file-line"><span class="pl-s">	            /_/</span></td>
+      </tr>
+      <tr>
+        <td id="L91" class="blob-num js-line-number" data-line-number="91"></td>
+        <td id="LC91" class="blob-code blob-code-inner js-file-line"><span class="pl-s"><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L92" class="blob-num js-line-number" data-line-number="92"></td>
+        <td id="LC92" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L93" class="blob-num js-line-number" data-line-number="93"></td>
+        <td id="LC93" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L94" class="blob-num js-line-number" data-line-number="94"></td>
+        <td id="LC94" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L95" class="blob-num js-line-number" data-line-number="95"></td>
+        <td id="LC95" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  Welcome to Snipe-IT Inventory Installer for Centos and Debian!<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L96" class="blob-num js-line-number" data-line-number="96"></td>
+        <td id="LC96" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L97" class="blob-num js-line-number" data-line-number="97"></td>
+        <td id="LC97" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">shopt</span> -s nocasematch</td>
+      </tr>
+      <tr>
+        <td id="L98" class="blob-num js-line-number" data-line-number="98"></td>
+        <td id="LC98" class="blob-code blob-code-inner js-file-line"><span class="pl-k">case</span> <span class="pl-smi">$distro</span> in</td>
+      </tr>
+      <tr>
+        <td id="L99" class="blob-num js-line-number" data-line-number="99"></td>
+        <td id="LC99" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">*</span>Ubuntu<span class="pl-k">*</span>)</td>
+      </tr>
+      <tr>
+        <td id="L100" class="blob-num js-line-number" data-line-number="100"></td>
+        <td id="LC100" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  The installer has detected Ubuntu version <span class="pl-smi">$version</span> as the OS.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L101" class="blob-num js-line-number" data-line-number="101"></td>
+        <td id="LC101" class="blob-code blob-code-inner js-file-line">                distro=ubuntu</td>
+      </tr>
+      <tr>
+        <td id="L102" class="blob-num js-line-number" data-line-number="102"></td>
+        <td id="LC102" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L103" class="blob-num js-line-number" data-line-number="103"></td>
+        <td id="LC103" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">*</span>Debian<span class="pl-k">*</span>)</td>
+      </tr>
+      <tr>
+        <td id="L104" class="blob-num js-line-number" data-line-number="104"></td>
+        <td id="LC104" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  The installer has detected Debian version <span class="pl-smi">$version</span> as the OS.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L105" class="blob-num js-line-number" data-line-number="105"></td>
+        <td id="LC105" class="blob-code blob-code-inner js-file-line">                distro=debian</td>
+      </tr>
+      <tr>
+        <td id="L106" class="blob-num js-line-number" data-line-number="106"></td>
+        <td id="LC106" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L107" class="blob-num js-line-number" data-line-number="107"></td>
+        <td id="LC107" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">*</span>centos<span class="pl-k">*</span>|<span class="pl-k">*</span>redhat<span class="pl-k">*</span>)</td>
+      </tr>
+      <tr>
+        <td id="L108" class="blob-num js-line-number" data-line-number="108"></td>
+        <td id="LC108" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  The installer has detected <span class="pl-smi">$distro</span> version <span class="pl-smi">$version</span> as the OS.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L109" class="blob-num js-line-number" data-line-number="109"></td>
+        <td id="LC109" class="blob-code blob-code-inner js-file-line">                distro=centos</td>
+      </tr>
+      <tr>
+        <td id="L110" class="blob-num js-line-number" data-line-number="110"></td>
+        <td id="LC110" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L111" class="blob-num js-line-number" data-line-number="111"></td>
+        <td id="LC111" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">*</span>)</td>
+      </tr>
+      <tr>
+        <td id="L112" class="blob-num js-line-number" data-line-number="112"></td>
+        <td id="LC112" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  The installer was unable to determine your OS. Exiting for safety.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L113" class="blob-num js-line-number" data-line-number="113"></td>
+        <td id="LC113" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">exit</span></td>
+      </tr>
+      <tr>
+        <td id="L114" class="blob-num js-line-number" data-line-number="114"></td>
+        <td id="LC114" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L115" class="blob-num js-line-number" data-line-number="115"></td>
+        <td id="LC115" class="blob-code blob-code-inner js-file-line"><span class="pl-k">esac</span></td>
+      </tr>
+      <tr>
+        <td id="L116" class="blob-num js-line-number" data-line-number="116"></td>
+        <td id="LC116" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">shopt</span> -u nocasematch</td>
+      </tr>
+      <tr>
+        <td id="L117" class="blob-num js-line-number" data-line-number="117"></td>
+        <td id="LC117" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Get your FQDN.</span></td>
+      </tr>
+      <tr>
+        <td id="L118" class="blob-num js-line-number" data-line-number="118"></td>
+        <td id="LC118" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L119" class="blob-num js-line-number" data-line-number="119"></td>
+        <td id="LC119" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span>  Q. What is the FQDN of your server? (<span class="pl-smi">$fqdn</span>): <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L120" class="blob-num js-line-number" data-line-number="120"></td>
+        <td id="LC120" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">read</span> fqdn</td>
+      </tr>
+      <tr>
+        <td id="L121" class="blob-num js-line-number" data-line-number="121"></td>
+        <td id="LC121" class="blob-code blob-code-inner js-file-line"><span class="pl-k">if</span> [ <span class="pl-k">-z</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L122" class="blob-num js-line-number" data-line-number="122"></td>
+        <td id="LC122" class="blob-code blob-code-inner js-file-line">        fqdn=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span>hostname --fqdn<span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L123" class="blob-num js-line-number" data-line-number="123"></td>
+        <td id="LC123" class="blob-code blob-code-inner js-file-line"><span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L124" class="blob-num js-line-number" data-line-number="124"></td>
+        <td id="LC124" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>     Setting to <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L125" class="blob-num js-line-number" data-line-number="125"></td>
+        <td id="LC125" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L126" class="blob-num js-line-number" data-line-number="126"></td>
+        <td id="LC126" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L127" class="blob-num js-line-number" data-line-number="127"></td>
+        <td id="LC127" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Do you want to set your own passwords, or have me generate random ones?</span></td>
+      </tr>
+      <tr>
+        <td id="L128" class="blob-num js-line-number" data-line-number="128"></td>
+        <td id="LC128" class="blob-code blob-code-inner js-file-line"><span class="pl-k">until</span> [[ <span class="pl-smi">$ans</span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>yes<span class="pl-pds">&quot;</span></span> ]] <span class="pl-k">||</span> [[ <span class="pl-smi">$ans</span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>no<span class="pl-pds">&quot;</span></span> ]]<span class="pl-k">;</span> <span class="pl-k">do</span></td>
+      </tr>
+      <tr>
+        <td id="L129" class="blob-num js-line-number" data-line-number="129"></td>
+        <td id="LC129" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span>  Q. Do you want me to automatically create the snipe database user password? (y/n) <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L130" class="blob-num js-line-number" data-line-number="130"></td>
+        <td id="LC130" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">read</span> setpw</td>
+      </tr>
+      <tr>
+        <td id="L131" class="blob-num js-line-number" data-line-number="131"></td>
+        <td id="LC131" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L132" class="blob-num js-line-number" data-line-number="132"></td>
+        <td id="LC132" class="blob-code blob-code-inner js-file-line"><span class="pl-k">case</span> <span class="pl-smi">$setpw</span> in</td>
+      </tr>
+      <tr>
+        <td id="L133" class="blob-num js-line-number" data-line-number="133"></td>
+        <td id="LC133" class="blob-code blob-code-inner js-file-line">        [yY] | [yY][Ee][Ss] )</td>
+      </tr>
+      <tr>
+        <td id="L134" class="blob-num js-line-number" data-line-number="134"></td>
+        <td id="LC134" class="blob-code blob-code-inner js-file-line">                mysqluserpw=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">`</span><span class="pl-k">&lt;</span> /dev/urandom tr -dc _A-Za-z-0-9 <span class="pl-k">|</span> head -c16<span class="pl-pds">`</span></span><span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L135" class="blob-num js-line-number" data-line-number="135"></td>
+        <td id="LC135" class="blob-code blob-code-inner js-file-line">                ans=<span class="pl-s"><span class="pl-pds">&quot;</span>yes<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L136" class="blob-num js-line-number" data-line-number="136"></td>
+        <td id="LC136" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L137" class="blob-num js-line-number" data-line-number="137"></td>
+        <td id="LC137" class="blob-code blob-code-inner js-file-line">        [nN] | [n|N][O|o] )</td>
+      </tr>
+      <tr>
+        <td id="L138" class="blob-num js-line-number" data-line-number="138"></td>
+        <td id="LC138" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> -n  <span class="pl-s"><span class="pl-pds">&quot;</span>  Q. What do you want your snipeit user password to be?<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L139" class="blob-num js-line-number" data-line-number="139"></td>
+        <td id="LC139" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">read</span> -s mysqluserpw</td>
+      </tr>
+      <tr>
+        <td id="L140" class="blob-num js-line-number" data-line-number="140"></td>
+        <td id="LC140" class="blob-code blob-code-inner js-file-line">                <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L141" class="blob-num js-line-number" data-line-number="141"></td>
+        <td id="LC141" class="blob-code blob-code-inner js-file-line">		ans=<span class="pl-s"><span class="pl-pds">&quot;</span>no<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L142" class="blob-num js-line-number" data-line-number="142"></td>
+        <td id="LC142" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L143" class="blob-num js-line-number" data-line-number="143"></td>
+        <td id="LC143" class="blob-code blob-code-inner js-file-line">        <span class="pl-k">*</span>) 	<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  Invalid answer. Please type y or n<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L144" class="blob-num js-line-number" data-line-number="144"></td>
+        <td id="LC144" class="blob-code blob-code-inner js-file-line">                ;;</td>
+      </tr>
+      <tr>
+        <td id="L145" class="blob-num js-line-number" data-line-number="145"></td>
+        <td id="LC145" class="blob-code blob-code-inner js-file-line"><span class="pl-k">esac</span></td>
+      </tr>
+      <tr>
+        <td id="L146" class="blob-num js-line-number" data-line-number="146"></td>
+        <td id="LC146" class="blob-code blob-code-inner js-file-line"><span class="pl-k">done</span></td>
+      </tr>
+      <tr>
+        <td id="L147" class="blob-num js-line-number" data-line-number="147"></td>
+        <td id="LC147" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L148" class="blob-num js-line-number" data-line-number="148"></td>
+        <td id="LC148" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Snipe says we need a new 32bit key, so let&#39;s create one randomly and inject it into the file</span></td>
+      </tr>
+      <tr>
+        <td id="L149" class="blob-num js-line-number" data-line-number="149"></td>
+        <td id="LC149" class="blob-code blob-code-inner js-file-line">random32=<span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-s"><span class="pl-pds">$(</span><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">`</span><span class="pl-k">&lt;</span> /dev/urandom tr -dc _A-Za-z-0-9 <span class="pl-k">|</span> head -c32<span class="pl-pds">`</span></span><span class="pl-pds">)</span></span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L150" class="blob-num js-line-number" data-line-number="150"></td>
+        <td id="LC150" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L151" class="blob-num js-line-number" data-line-number="151"></td>
+        <td id="LC151" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#db_setup.sql will be injected to the database during install.</span></td>
+      </tr>
+      <tr>
+        <td id="L152" class="blob-num js-line-number" data-line-number="152"></td>
+        <td id="LC152" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Again, this file should be removed, which will be a prompt at the end of the script.</span></td>
+      </tr>
+      <tr>
+        <td id="L153" class="blob-num js-line-number" data-line-number="153"></td>
+        <td id="LC153" class="blob-code blob-code-inner js-file-line">dbsetup=<span class="pl-smi">$tmp</span>/db_setup.sql</td>
+      </tr>
+      <tr>
+        <td id="L154" class="blob-num js-line-number" data-line-number="154"></td>
+        <td id="LC154" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$dbsetup</span> <span class="pl-s"><span class="pl-pds">&quot;</span>CREATE DATABASE snipeit;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L155" class="blob-num js-line-number" data-line-number="155"></td>
+        <td id="LC155" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$dbsetup</span> <span class="pl-s"><span class="pl-pds">&quot;</span>GRANT ALL PRIVILEGES ON snipeit.* TO snipeit@localhost IDENTIFIED BY &#39;<span class="pl-smi">$mysqluserpw</span>&#39;;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L156" class="blob-num js-line-number" data-line-number="156"></td>
+        <td id="LC156" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L157" class="blob-num js-line-number" data-line-number="157"></td>
+        <td id="LC157" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#Let us make it so only root can read the file. Again, this isn&#39;t best practice, so please remove these after the install.</span></td>
+      </tr>
+      <tr>
+        <td id="L158" class="blob-num js-line-number" data-line-number="158"></td>
+        <td id="LC158" class="blob-code blob-code-inner js-file-line">chown root:root <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L159" class="blob-num js-line-number" data-line-number="159"></td>
+        <td id="LC159" class="blob-code blob-code-inner js-file-line">chmod 700 <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L160" class="blob-num js-line-number" data-line-number="160"></td>
+        <td id="LC160" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L161" class="blob-num js-line-number" data-line-number="161"></td>
+        <td id="LC161" class="blob-code blob-code-inner js-file-line"><span class="pl-c">## TODO: Progress tracker on each step</span></td>
+      </tr>
+      <tr>
+        <td id="L162" class="blob-num js-line-number" data-line-number="162"></td>
+        <td id="LC162" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L163" class="blob-num js-line-number" data-line-number="163"></td>
+        <td id="LC163" class="blob-code blob-code-inner js-file-line"><span class="pl-k">case</span> <span class="pl-smi">$distro</span> in</td>
+      </tr>
+      <tr>
+        <td id="L164" class="blob-num js-line-number" data-line-number="164"></td>
+        <td id="LC164" class="blob-code blob-code-inner js-file-line">	debian)</td>
+      </tr>
+      <tr>
+        <td id="L165" class="blob-num js-line-number" data-line-number="165"></td>
+        <td id="LC165" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#####################################  Install for Debian ##############################################</span></td>
+      </tr>
+      <tr>
+        <td id="L166" class="blob-num js-line-number" data-line-number="166"></td>
+        <td id="LC166" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L167" class="blob-num js-line-number" data-line-number="167"></td>
+        <td id="LC167" class="blob-code blob-code-inner js-file-line">		webdir=/var/www</td>
+      </tr>
+      <tr>
+        <td id="L168" class="blob-num js-line-number" data-line-number="168"></td>
+        <td id="LC168" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L169" class="blob-num js-line-number" data-line-number="169"></td>
+        <td id="LC169" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Update/upgrade Debian repositories.</span></td>
+      </tr>
+      <tr>
+        <td id="L170" class="blob-num js-line-number" data-line-number="170"></td>
+        <td id="LC170" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L171" class="blob-num js-line-number" data-line-number="171"></td>
+        <td id="LC171" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Updating Debian packages in the background. Please be patient.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L172" class="blob-num js-line-number" data-line-number="172"></td>
+        <td id="LC172" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L173" class="blob-num js-line-number" data-line-number="173"></td>
+        <td id="LC173" class="blob-code blob-code-inner js-file-line">		apachefile=/etc/apache2/sites-available/<span class="pl-smi">$name</span>.conf</td>
+      </tr>
+      <tr>
+        <td id="L174" class="blob-num js-line-number" data-line-number="174"></td>
+        <td id="LC174" class="blob-code blob-code-inner js-file-line">		sudo apt-get update <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L175" class="blob-num js-line-number" data-line-number="175"></td>
+        <td id="LC175" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L176" class="blob-num js-line-number" data-line-number="176"></td>
+        <td id="LC176" class="blob-code blob-code-inner js-file-line">		sudo apt-get -y upgrade <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L177" class="blob-num js-line-number" data-line-number="177"></td>
+        <td id="LC177" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L178" class="blob-num js-line-number" data-line-number="178"></td>
+        <td id="LC178" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing packages.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L179" class="blob-num js-line-number" data-line-number="179"></td>
+        <td id="LC179" class="blob-code blob-code-inner js-file-line">		sudo apt-get -y install mariadb-server mariadb-client</td>
+      </tr>
+      <tr>
+        <td id="L180" class="blob-num js-line-number" data-line-number="180"></td>
+        <td id="LC180" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>## Going to suppress more messages that you don&#39;t need to worry about. Please wait.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L181" class="blob-num js-line-number" data-line-number="181"></td>
+        <td id="LC181" class="blob-code blob-code-inner js-file-line">		sudo apt-get -y install apache2 <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L182" class="blob-num js-line-number" data-line-number="182"></td>
+        <td id="LC182" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L183" class="blob-num js-line-number" data-line-number="183"></td>
+        <td id="LC183" class="blob-code blob-code-inner js-file-line">		sudo apt-get install -y git unzip php5 php5-mcrypt php5-curl php5-mysql php5-gd php5-ldap libapache2-mod-php5 curl <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L184" class="blob-num js-line-number" data-line-number="184"></td>
+        <td id="LC184" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L185" class="blob-num js-line-number" data-line-number="185"></td>
+        <td id="LC185" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L186" class="blob-num js-line-number" data-line-number="186"></td>
+        <td id="LC186" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#  Get files and extract to web dir</span></td>
+      </tr>
+      <tr>
+        <td id="L187" class="blob-num js-line-number" data-line-number="187"></td>
+        <td id="LC187" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L188" class="blob-num js-line-number" data-line-number="188"></td>
+        <td id="LC188" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Downloading snipeit and extract to web directory.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L189" class="blob-num js-line-number" data-line-number="189"></td>
+        <td id="LC189" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://github.com/snipe/snipe-it/archive/<span class="pl-smi">$file</span></td>
+      </tr>
+      <tr>
+        <td id="L190" class="blob-num js-line-number" data-line-number="190"></td>
+        <td id="LC190" class="blob-code blob-code-inner js-file-line">		unzip -qo <span class="pl-smi">$tmp</span>/<span class="pl-smi">$file</span> -d <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L191" class="blob-num js-line-number" data-line-number="191"></td>
+        <td id="LC191" class="blob-code blob-code-inner js-file-line">		cp -R <span class="pl-smi">$tmp</span>/<span class="pl-smi">$fileName</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L192" class="blob-num js-line-number" data-line-number="192"></td>
+        <td id="LC192" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L193" class="blob-num js-line-number" data-line-number="193"></td>
+        <td id="LC193" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">##  TODO make sure apache is set to start on boot and go ahead and start it</span></td>
+      </tr>
+      <tr>
+        <td id="L194" class="blob-num js-line-number" data-line-number="194"></td>
+        <td id="LC194" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L195" class="blob-num js-line-number" data-line-number="195"></td>
+        <td id="LC195" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Enable mcrypt and rewrite</span></td>
+      </tr>
+      <tr>
+        <td id="L196" class="blob-num js-line-number" data-line-number="196"></td>
+        <td id="LC196" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Enabling mcrypt and rewrite<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L197" class="blob-num js-line-number" data-line-number="197"></td>
+        <td id="LC197" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L198" class="blob-num js-line-number" data-line-number="198"></td>
+        <td id="LC198" class="blob-code blob-code-inner js-file-line">		sudo php5enmod mcrypt</td>
+      </tr>
+      <tr>
+        <td id="L199" class="blob-num js-line-number" data-line-number="199"></td>
+        <td id="LC199" class="blob-code blob-code-inner js-file-line">		sudo a2enmod rewrite</td>
+      </tr>
+      <tr>
+        <td id="L200" class="blob-num js-line-number" data-line-number="200"></td>
+        <td id="LC200" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L201" class="blob-num js-line-number" data-line-number="201"></td>
+        <td id="LC201" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Create a new virtual host for Apache.</span></td>
+      </tr>
+      <tr>
+        <td id="L202" class="blob-num js-line-number" data-line-number="202"></td>
+        <td id="LC202" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Create Virtual host for apache.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L203" class="blob-num js-line-number" data-line-number="203"></td>
+        <td id="LC203" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L204" class="blob-num js-line-number" data-line-number="204"></td>
+        <td id="LC204" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L205" class="blob-num js-line-number" data-line-number="205"></td>
+        <td id="LC205" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;VirtualHost *:80&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L206" class="blob-num js-line-number" data-line-number="206"></td>
+        <td id="LC206" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>ServerAdmin webmaster@localhost<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L207" class="blob-num js-line-number" data-line-number="207"></td>
+        <td id="LC207" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    &lt;Directory <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L208" class="blob-num js-line-number" data-line-number="208"></td>
+        <td id="LC208" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Require all granted<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L209" class="blob-num js-line-number" data-line-number="209"></td>
+        <td id="LC209" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        AllowOverride All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L210" class="blob-num js-line-number" data-line-number="210"></td>
+        <td id="LC210" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>   &lt;/Directory&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L211" class="blob-num js-line-number" data-line-number="211"></td>
+        <td id="LC211" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    DocumentRoot <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L212" class="blob-num js-line-number" data-line-number="212"></td>
+        <td id="LC212" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    ServerName <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L213" class="blob-num js-line-number" data-line-number="213"></td>
+        <td id="LC213" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        ErrorLog /var/log/apache2/snipeIT.error.log<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L214" class="blob-num js-line-number" data-line-number="214"></td>
+        <td id="LC214" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        CustomLog /var/log/apache2/access.log combined<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L215" class="blob-num js-line-number" data-line-number="215"></td>
+        <td id="LC215" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;/VirtualHost&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L216" class="blob-num js-line-number" data-line-number="216"></td>
+        <td id="LC216" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L217" class="blob-num js-line-number" data-line-number="217"></td>
+        <td id="LC217" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L218" class="blob-num js-line-number" data-line-number="218"></td>
+        <td id="LC218" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>## Configuring .env file.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L219" class="blob-num js-line-number" data-line-number="219"></td>
+        <td id="LC219" class="blob-code blob-code-inner js-file-line">		cat <span class="pl-k">&gt;</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/.env <span class="pl-s"><span class="pl-k">&lt;&lt;</span>-<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L220" class="blob-num js-line-number" data-line-number="220"></td>
+        <td id="LC220" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		#Created By Snipe-it Installer</span></td>
+      </tr>
+      <tr>
+        <td id="L221" class="blob-num js-line-number" data-line-number="221"></td>
+        <td id="LC221" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_TIMEZONE=$(cat /etc/timezone)</span></td>
+      </tr>
+      <tr>
+        <td id="L222" class="blob-num js-line-number" data-line-number="222"></td>
+        <td id="LC222" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_HOST=localhost</span></td>
+      </tr>
+      <tr>
+        <td id="L223" class="blob-num js-line-number" data-line-number="223"></td>
+        <td id="LC223" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DATABASE=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L224" class="blob-num js-line-number" data-line-number="224"></td>
+        <td id="LC224" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_USERNAME=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L225" class="blob-num js-line-number" data-line-number="225"></td>
+        <td id="LC225" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_PASSWORD=$mysqluserpw</span></td>
+      </tr>
+      <tr>
+        <td id="L226" class="blob-num js-line-number" data-line-number="226"></td>
+        <td id="LC226" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_URL=http://$fqdn</span></td>
+      </tr>
+      <tr>
+        <td id="L227" class="blob-num js-line-number" data-line-number="227"></td>
+        <td id="LC227" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_KEY=$random32</span></td>
+      </tr>
+      <tr>
+        <td id="L228" class="blob-num js-line-number" data-line-number="228"></td>
+        <td id="LC228" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DUMP_PATH=&#39;/usr/bin&#39;</span></td>
+      </tr>
+      <tr>
+        <td id="L229" class="blob-num js-line-number" data-line-number="229"></td>
+        <td id="LC229" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L230" class="blob-num js-line-number" data-line-number="230"></td>
+        <td id="LC230" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L231" class="blob-num js-line-number" data-line-number="231"></td>
+        <td id="LC231" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Setting up hosts file.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L232" class="blob-num js-line-number" data-line-number="232"></td>
+        <td id="LC232" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$hosts</span> <span class="pl-s"><span class="pl-pds">&quot;</span>127.0.0.1 <span class="pl-smi">$hostname</span> <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L233" class="blob-num js-line-number" data-line-number="233"></td>
+        <td id="LC233" class="blob-code blob-code-inner js-file-line">		a2ensite <span class="pl-smi">$name</span>.conf</td>
+      </tr>
+      <tr>
+        <td id="L234" class="blob-num js-line-number" data-line-number="234"></td>
+        <td id="LC234" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L235" class="blob-num js-line-number" data-line-number="235"></td>
+        <td id="LC235" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Modify the Snipe-It files necessary for a production environment.</span></td>
+      </tr>
+      <tr>
+        <td id="L236" class="blob-num js-line-number" data-line-number="236"></td>
+        <td id="LC236" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Modify the Snipe-It files necessary for a production environment.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L237" class="blob-num js-line-number" data-line-number="237"></td>
+        <td id="LC237" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Securing Mysql<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L238" class="blob-num js-line-number" data-line-number="238"></td>
+        <td id="LC238" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Have user set own root password when securing install</span></td>
+      </tr>
+      <tr>
+        <td id="L239" class="blob-num js-line-number" data-line-number="239"></td>
+        <td id="LC239" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># and just set the snipeit database user at the beginning</span></td>
+      </tr>
+      <tr>
+        <td id="L240" class="blob-num js-line-number" data-line-number="240"></td>
+        <td id="LC240" class="blob-code blob-code-inner js-file-line">		/usr/bin/mysql_secure_installation</td>
+      </tr>
+      <tr>
+        <td id="L241" class="blob-num js-line-number" data-line-number="241"></td>
+        <td id="LC241" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L242" class="blob-num js-line-number" data-line-number="242"></td>
+        <td id="LC242" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">##  TODO make sure mysql is set to start on boot and go ahead and start it</span></td>
+      </tr>
+      <tr>
+        <td id="L243" class="blob-num js-line-number" data-line-number="243"></td>
+        <td id="LC243" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L244" class="blob-num js-line-number" data-line-number="244"></td>
+        <td id="LC244" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Creating Mysql Database and User.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L245" class="blob-num js-line-number" data-line-number="245"></td>
+        <td id="LC245" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Please Input your MySQL/MariaDB root password: <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L246" class="blob-num js-line-number" data-line-number="246"></td>
+        <td id="LC246" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L247" class="blob-num js-line-number" data-line-number="247"></td>
+        <td id="LC247" class="blob-code blob-code-inner js-file-line">		mysql -u root -p <span class="pl-k">&lt;</span> <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L248" class="blob-num js-line-number" data-line-number="248"></td>
+        <td id="LC248" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L249" class="blob-num js-line-number" data-line-number="249"></td>
+        <td id="LC249" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L250" class="blob-num js-line-number" data-line-number="250"></td>
+        <td id="LC250" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install / configure composer</span></td>
+      </tr>
+      <tr>
+        <td id="L251" class="blob-num js-line-number" data-line-number="251"></td>
+        <td id="LC251" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing and configuring composer<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L252" class="blob-num js-line-number" data-line-number="252"></td>
+        <td id="LC252" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">cd</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/</td>
+      </tr>
+      <tr>
+        <td id="L253" class="blob-num js-line-number" data-line-number="253"></td>
+        <td id="LC253" class="blob-code blob-code-inner js-file-line">		curl -sS https://getcomposer.org/installer <span class="pl-k">|</span> php</td>
+      </tr>
+      <tr>
+        <td id="L254" class="blob-num js-line-number" data-line-number="254"></td>
+        <td id="LC254" class="blob-code blob-code-inner js-file-line">		php composer.phar install --no-dev --prefer-source</td>
+      </tr>
+      <tr>
+        <td id="L255" class="blob-num js-line-number" data-line-number="255"></td>
+        <td id="LC255" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L256" class="blob-num js-line-number" data-line-number="256"></td>
+        <td id="LC256" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Change permissions on directories</span></td>
+      </tr>
+      <tr>
+        <td id="L257" class="blob-num js-line-number" data-line-number="257"></td>
+        <td id="LC257" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Seting permissions on web directory.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L258" class="blob-num js-line-number" data-line-number="258"></td>
+        <td id="LC258" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage</td>
+      </tr>
+      <tr>
+        <td id="L259" class="blob-num js-line-number" data-line-number="259"></td>
+        <td id="LC259" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage/private_uploads</td>
+      </tr>
+      <tr>
+        <td id="L260" class="blob-num js-line-number" data-line-number="260"></td>
+        <td id="LC260" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public/uploads</td>
+      </tr>
+      <tr>
+        <td id="L261" class="blob-num js-line-number" data-line-number="261"></td>
+        <td id="LC261" class="blob-code blob-code-inner js-file-line">		sudo chown -R www-data:www-data /var/www/</td>
+      </tr>
+      <tr>
+        <td id="L262" class="blob-num js-line-number" data-line-number="262"></td>
+        <td id="LC262" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># echo &quot;##  Finished permission changes.&quot;</span></td>
+      </tr>
+      <tr>
+        <td id="L263" class="blob-num js-line-number" data-line-number="263"></td>
+        <td id="LC263" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L264" class="blob-num js-line-number" data-line-number="264"></td>
+        <td id="LC264" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Restarting apache.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L265" class="blob-num js-line-number" data-line-number="265"></td>
+        <td id="LC265" class="blob-code blob-code-inner js-file-line">		service apache2 restart</td>
+      </tr>
+      <tr>
+        <td id="L266" class="blob-num js-line-number" data-line-number="266"></td>
+        <td id="LC266" class="blob-code blob-code-inner js-file-line">		;;</td>
+      </tr>
+      <tr>
+        <td id="L267" class="blob-num js-line-number" data-line-number="267"></td>
+        <td id="LC267" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L268" class="blob-num js-line-number" data-line-number="268"></td>
+        <td id="LC268" class="blob-code blob-code-inner js-file-line">	ubuntu)</td>
+      </tr>
+      <tr>
+        <td id="L269" class="blob-num js-line-number" data-line-number="269"></td>
+        <td id="LC269" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#####################################  Install for Ubuntu  ##############################################</span></td>
+      </tr>
+      <tr>
+        <td id="L270" class="blob-num js-line-number" data-line-number="270"></td>
+        <td id="LC270" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L271" class="blob-num js-line-number" data-line-number="271"></td>
+        <td id="LC271" class="blob-code blob-code-inner js-file-line">		webdir=/var/www</td>
+      </tr>
+      <tr>
+        <td id="L272" class="blob-num js-line-number" data-line-number="272"></td>
+        <td id="LC272" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L273" class="blob-num js-line-number" data-line-number="273"></td>
+        <td id="LC273" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Update/upgrade Debian/Ubuntu repositories, get the latest version of git.</span></td>
+      </tr>
+      <tr>
+        <td id="L274" class="blob-num js-line-number" data-line-number="274"></td>
+        <td id="LC274" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L275" class="blob-num js-line-number" data-line-number="275"></td>
+        <td id="LC275" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Updating ubuntu in the background. Please be patient.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L276" class="blob-num js-line-number" data-line-number="276"></td>
+        <td id="LC276" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L277" class="blob-num js-line-number" data-line-number="277"></td>
+        <td id="LC277" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span>Updating with apt-get update... <span class="pl-smi">${spin[0]}</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L278" class="blob-num js-line-number" data-line-number="278"></td>
+        <td id="LC278" class="blob-code blob-code-inner js-file-line">		sudo apt-get update <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L279" class="blob-num js-line-number" data-line-number="279"></td>
+        <td id="LC279" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L280" class="blob-num js-line-number" data-line-number="280"></td>
+        <td id="LC280" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span>Upgrading packages with apt-get upgrade... <span class="pl-smi">${spin[0]}</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L281" class="blob-num js-line-number" data-line-number="281"></td>
+        <td id="LC281" class="blob-code blob-code-inner js-file-line">		sudo apt-get -y upgrade <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L282" class="blob-num js-line-number" data-line-number="282"></td>
+        <td id="LC282" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L283" class="blob-num js-line-number" data-line-number="283"></td>
+        <td id="LC283" class="blob-code blob-code-inner js-file-line">		apachefile=/etc/apache2/sites-available/<span class="pl-smi">$name</span>.conf</td>
+      </tr>
+      <tr>
+        <td id="L284" class="blob-num js-line-number" data-line-number="284"></td>
+        <td id="LC284" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing packages.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L285" class="blob-num js-line-number" data-line-number="285"></td>
+        <td id="LC285" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L286" class="blob-num js-line-number" data-line-number="286"></td>
+        <td id="LC286" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#We already established MySQL root &amp; user PWs, so we dont need to be prompted. Let&#39;s go ahead and install Apache, PHP and MySQL.</span></td>
+      </tr>
+      <tr>
+        <td id="L287" class="blob-num js-line-number" data-line-number="287"></td>
+        <td id="LC287" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Setting up LAMP.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L288" class="blob-num js-line-number" data-line-number="288"></td>
+        <td id="LC288" class="blob-code blob-code-inner js-file-line">		sudo DEBIAN_FRONTEND=noninteractive apt-get install -y lamp-server^ <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">&amp;</span> pid=<span class="pl-smi">$!</span> <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L289" class="blob-num js-line-number" data-line-number="289"></td>
+        <td id="LC289" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L290" class="blob-num js-line-number" data-line-number="290"></td>
+        <td id="LC290" class="blob-code blob-code-inner js-file-line">		progress</td>
+      </tr>
+      <tr>
+        <td id="L291" class="blob-num js-line-number" data-line-number="291"></td>
+        <td id="LC291" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">if</span> [ <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$version</span><span class="pl-pds">&quot;</span></span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>16.04<span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L292" class="blob-num js-line-number" data-line-number="292"></td>
+        <td id="LC292" class="blob-code blob-code-inner js-file-line">			sudo apt-get install -y git unzip php php-mcrypt php-curl php-mysql php-gd php-ldap php-zip php-mbstring php-xml <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L293" class="blob-num js-line-number" data-line-number="293"></td>
+        <td id="LC293" class="blob-code blob-code-inner js-file-line">			sudo apt-get install -y git unzip php php-mcrypt php-curl php-mysql php-gd php-ldap php-xml php-zip php-mbstring <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L294" class="blob-num js-line-number" data-line-number="294"></td>
+        <td id="LC294" class="blob-code blob-code-inner js-file-line">			<span class="pl-c">#Enable mcrypt and rewrite</span></td>
+      </tr>
+      <tr>
+        <td id="L295" class="blob-num js-line-number" data-line-number="295"></td>
+        <td id="LC295" class="blob-code blob-code-inner js-file-line">			<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Enabling mcrypt and rewrite<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L296" class="blob-num js-line-number" data-line-number="296"></td>
+        <td id="LC296" class="blob-code blob-code-inner js-file-line">			sudo phpenmod mcrypt <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L297" class="blob-num js-line-number" data-line-number="297"></td>
+        <td id="LC297" class="blob-code blob-code-inner js-file-line">			sudo phpenmod mbstring <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L298" class="blob-num js-line-number" data-line-number="298"></td>
+        <td id="LC298" class="blob-code blob-code-inner js-file-line">			sudo a2enmod rewrite <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L299" class="blob-num js-line-number" data-line-number="299"></td>
+        <td id="LC299" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L300" class="blob-num js-line-number" data-line-number="300"></td>
+        <td id="LC300" class="blob-code blob-code-inner js-file-line">			sudo apt-get install -y git unzip php5 php5-mcrypt php5-curl php5-mysql php5-gd php5-ldap <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L301" class="blob-num js-line-number" data-line-number="301"></td>
+        <td id="LC301" class="blob-code blob-code-inner js-file-line">			<span class="pl-c">#Enable mcrypt and rewrite</span></td>
+      </tr>
+      <tr>
+        <td id="L302" class="blob-num js-line-number" data-line-number="302"></td>
+        <td id="LC302" class="blob-code blob-code-inner js-file-line">			<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Enabling mcrypt and rewrite<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L303" class="blob-num js-line-number" data-line-number="303"></td>
+        <td id="LC303" class="blob-code blob-code-inner js-file-line">			sudo php5enmod mcrypt <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L304" class="blob-num js-line-number" data-line-number="304"></td>
+        <td id="LC304" class="blob-code blob-code-inner js-file-line">			sudo a2enmod rewrite <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L305" class="blob-num js-line-number" data-line-number="305"></td>
+        <td id="LC305" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L306" class="blob-num js-line-number" data-line-number="306"></td>
+        <td id="LC306" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#  Get files and extract to web dir</span></td>
+      </tr>
+      <tr>
+        <td id="L307" class="blob-num js-line-number" data-line-number="307"></td>
+        <td id="LC307" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L308" class="blob-num js-line-number" data-line-number="308"></td>
+        <td id="LC308" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Downloading snipeit and extract to web directory.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L309" class="blob-num js-line-number" data-line-number="309"></td>
+        <td id="LC309" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://github.com/snipe/snipe-it/archive/<span class="pl-smi">$file</span> <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L310" class="blob-num js-line-number" data-line-number="310"></td>
+        <td id="LC310" class="blob-code blob-code-inner js-file-line">		unzip -qo <span class="pl-smi">$tmp</span>/<span class="pl-smi">$file</span> -d <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L311" class="blob-num js-line-number" data-line-number="311"></td>
+        <td id="LC311" class="blob-code blob-code-inner js-file-line">		cp -R <span class="pl-smi">$tmp</span>/<span class="pl-smi">$fileName</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L312" class="blob-num js-line-number" data-line-number="312"></td>
+        <td id="LC312" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L313" class="blob-num js-line-number" data-line-number="313"></td>
+        <td id="LC313" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">##  TODO make sure apache is set to start on boot and go ahead and start it</span></td>
+      </tr>
+      <tr>
+        <td id="L314" class="blob-num js-line-number" data-line-number="314"></td>
+        <td id="LC314" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L315" class="blob-num js-line-number" data-line-number="315"></td>
+        <td id="LC315" class="blob-code blob-code-inner js-file-line">		sudo ls -al /etc/apache2/mods-enabled/rewrite.load <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L316" class="blob-num js-line-number" data-line-number="316"></td>
+        <td id="LC316" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L317" class="blob-num js-line-number" data-line-number="317"></td>
+        <td id="LC317" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Create a new virtual host for Apache.</span></td>
+      </tr>
+      <tr>
+        <td id="L318" class="blob-num js-line-number" data-line-number="318"></td>
+        <td id="LC318" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Create Virtual host for apache.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L319" class="blob-num js-line-number" data-line-number="319"></td>
+        <td id="LC319" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L320" class="blob-num js-line-number" data-line-number="320"></td>
+        <td id="LC320" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L321" class="blob-num js-line-number" data-line-number="321"></td>
+        <td id="LC321" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;VirtualHost *:80&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L322" class="blob-num js-line-number" data-line-number="322"></td>
+        <td id="LC322" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>ServerAdmin webmaster@localhost<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L323" class="blob-num js-line-number" data-line-number="323"></td>
+        <td id="LC323" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    &lt;Directory <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L324" class="blob-num js-line-number" data-line-number="324"></td>
+        <td id="LC324" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Require all granted<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L325" class="blob-num js-line-number" data-line-number="325"></td>
+        <td id="LC325" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        AllowOverride All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L326" class="blob-num js-line-number" data-line-number="326"></td>
+        <td id="LC326" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>   &lt;/Directory&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L327" class="blob-num js-line-number" data-line-number="327"></td>
+        <td id="LC327" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    DocumentRoot <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L328" class="blob-num js-line-number" data-line-number="328"></td>
+        <td id="LC328" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    ServerName <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L329" class="blob-num js-line-number" data-line-number="329"></td>
+        <td id="LC329" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        ErrorLog /var/log/apache2/snipeIT.error.log<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L330" class="blob-num js-line-number" data-line-number="330"></td>
+        <td id="LC330" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        CustomLog /var/log/apache2/access.log combined<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L331" class="blob-num js-line-number" data-line-number="331"></td>
+        <td id="LC331" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;/VirtualHost&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L332" class="blob-num js-line-number" data-line-number="332"></td>
+        <td id="LC332" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L333" class="blob-num js-line-number" data-line-number="333"></td>
+        <td id="LC333" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Setting up hosts file.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L334" class="blob-num js-line-number" data-line-number="334"></td>
+        <td id="LC334" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$hosts</span> <span class="pl-s"><span class="pl-pds">&quot;</span>127.0.0.1 <span class="pl-smi">$hostname</span> <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L335" class="blob-num js-line-number" data-line-number="335"></td>
+        <td id="LC335" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L336" class="blob-num js-line-number" data-line-number="336"></td>
+        <td id="LC336" class="blob-code blob-code-inner js-file-line">		a2ensite <span class="pl-smi">$name</span>.conf <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log</td>
+      </tr>
+      <tr>
+        <td id="L337" class="blob-num js-line-number" data-line-number="337"></td>
+        <td id="LC337" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L338" class="blob-num js-line-number" data-line-number="338"></td>
+        <td id="LC338" class="blob-code blob-code-inner js-file-line">		cat <span class="pl-k">&gt;</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/.env <span class="pl-s"><span class="pl-k">&lt;&lt;</span>-<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L339" class="blob-num js-line-number" data-line-number="339"></td>
+        <td id="LC339" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		#Created By Snipe-it Installer</span></td>
+      </tr>
+      <tr>
+        <td id="L340" class="blob-num js-line-number" data-line-number="340"></td>
+        <td id="LC340" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_TIMEZONE=$(cat /etc/timezone)</span></td>
+      </tr>
+      <tr>
+        <td id="L341" class="blob-num js-line-number" data-line-number="341"></td>
+        <td id="LC341" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_HOST=localhost</span></td>
+      </tr>
+      <tr>
+        <td id="L342" class="blob-num js-line-number" data-line-number="342"></td>
+        <td id="LC342" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DATABASE=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L343" class="blob-num js-line-number" data-line-number="343"></td>
+        <td id="LC343" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_USERNAME=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L344" class="blob-num js-line-number" data-line-number="344"></td>
+        <td id="LC344" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_PASSWORD=$mysqluserpw</span></td>
+      </tr>
+      <tr>
+        <td id="L345" class="blob-num js-line-number" data-line-number="345"></td>
+        <td id="LC345" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_URL=http://$fqdn</span></td>
+      </tr>
+      <tr>
+        <td id="L346" class="blob-num js-line-number" data-line-number="346"></td>
+        <td id="LC346" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_KEY=$random32</span></td>
+      </tr>
+      <tr>
+        <td id="L347" class="blob-num js-line-number" data-line-number="347"></td>
+        <td id="LC347" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DUMP_PATH=&#39;/usr/bin&#39;</span></td>
+      </tr>
+      <tr>
+        <td id="L348" class="blob-num js-line-number" data-line-number="348"></td>
+        <td id="LC348" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L349" class="blob-num js-line-number" data-line-number="349"></td>
+        <td id="LC349" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L350" class="blob-num js-line-number" data-line-number="350"></td>
+        <td id="LC350" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">##  TODO make sure mysql is set to start on boot and go ahead and start it</span></td>
+      </tr>
+      <tr>
+        <td id="L351" class="blob-num js-line-number" data-line-number="351"></td>
+        <td id="LC351" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>## MySQL Phase next.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L352" class="blob-num js-line-number" data-line-number="352"></td>
+        <td id="LC352" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Setup Mysql, then run the command.</span></td>
+      </tr>
+      <tr>
+        <td id="L353" class="blob-num js-line-number" data-line-number="353"></td>
+        <td id="LC353" class="blob-code blob-code-inner js-file-line">		/usr/bin/mysql_secure_installation</td>
+      </tr>
+      <tr>
+        <td id="L354" class="blob-num js-line-number" data-line-number="354"></td>
+        <td id="LC354" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Creating MySQL Database and user. <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L355" class="blob-num js-line-number" data-line-number="355"></td>
+        <td id="LC355" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Please Input your MySQL/MariaDB root password: <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L356" class="blob-num js-line-number" data-line-number="356"></td>
+        <td id="LC356" class="blob-code blob-code-inner js-file-line">		mysql -u root -p <span class="pl-k">&lt;</span> <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L357" class="blob-num js-line-number" data-line-number="357"></td>
+        <td id="LC357" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L358" class="blob-num js-line-number" data-line-number="358"></td>
+        <td id="LC358" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Securing Mysql<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L359" class="blob-num js-line-number" data-line-number="359"></td>
+        <td id="LC359" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L360" class="blob-num js-line-number" data-line-number="360"></td>
+        <td id="LC360" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Have user set own root password when securing install</span></td>
+      </tr>
+      <tr>
+        <td id="L361" class="blob-num js-line-number" data-line-number="361"></td>
+        <td id="LC361" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># and just set the snipeit database user at the beginning</span></td>
+      </tr>
+      <tr>
+        <td id="L362" class="blob-num js-line-number" data-line-number="362"></td>
+        <td id="LC362" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L363" class="blob-num js-line-number" data-line-number="363"></td>
+        <td id="LC363" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install / configure composer</span></td>
+      </tr>
+      <tr>
+        <td id="L364" class="blob-num js-line-number" data-line-number="364"></td>
+        <td id="LC364" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing and configuring composer<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L365" class="blob-num js-line-number" data-line-number="365"></td>
+        <td id="LC365" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">cd</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/</td>
+      </tr>
+      <tr>
+        <td id="L366" class="blob-num js-line-number" data-line-number="366"></td>
+        <td id="LC366" class="blob-code blob-code-inner js-file-line">		curl -sS https://getcomposer.org/installer  <span class="pl-k">|</span> php</td>
+      </tr>
+      <tr>
+        <td id="L367" class="blob-num js-line-number" data-line-number="367"></td>
+        <td id="LC367" class="blob-code blob-code-inner js-file-line">		php composer.phar install --no-dev --prefer-source</td>
+      </tr>
+      <tr>
+        <td id="L368" class="blob-num js-line-number" data-line-number="368"></td>
+        <td id="LC368" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L369" class="blob-num js-line-number" data-line-number="369"></td>
+        <td id="LC369" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Change permissions on directories</span></td>
+      </tr>
+      <tr>
+        <td id="L370" class="blob-num js-line-number" data-line-number="370"></td>
+        <td id="LC370" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Seting permissions on web directory.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L371" class="blob-num js-line-number" data-line-number="371"></td>
+        <td id="LC371" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage</td>
+      </tr>
+      <tr>
+        <td id="L372" class="blob-num js-line-number" data-line-number="372"></td>
+        <td id="LC372" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage/private_uploads</td>
+      </tr>
+      <tr>
+        <td id="L373" class="blob-num js-line-number" data-line-number="373"></td>
+        <td id="LC373" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public/uploads</td>
+      </tr>
+      <tr>
+        <td id="L374" class="blob-num js-line-number" data-line-number="374"></td>
+        <td id="LC374" class="blob-code blob-code-inner js-file-line">		sudo chown -R www-data:www-data /var/www/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L375" class="blob-num js-line-number" data-line-number="375"></td>
+        <td id="LC375" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># echo &quot;##  Finished permission changes.&quot;</span></td>
+      </tr>
+      <tr>
+        <td id="L376" class="blob-num js-line-number" data-line-number="376"></td>
+        <td id="LC376" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L377" class="blob-num js-line-number" data-line-number="377"></td>
+        <td id="LC377" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Restarting apache.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L378" class="blob-num js-line-number" data-line-number="378"></td>
+        <td id="LC378" class="blob-code blob-code-inner js-file-line">		service apache2 restart</td>
+      </tr>
+      <tr>
+        <td id="L379" class="blob-num js-line-number" data-line-number="379"></td>
+        <td id="LC379" class="blob-code blob-code-inner js-file-line">		;;</td>
+      </tr>
+      <tr>
+        <td id="L380" class="blob-num js-line-number" data-line-number="380"></td>
+        <td id="LC380" class="blob-code blob-code-inner js-file-line">	centos )</td>
+      </tr>
+      <tr>
+        <td id="L381" class="blob-num js-line-number" data-line-number="381"></td>
+        <td id="LC381" class="blob-code blob-code-inner js-file-line">	<span class="pl-k">if</span> [ <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$version</span><span class="pl-pds">&quot;</span></span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>6<span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L382" class="blob-num js-line-number" data-line-number="382"></td>
+        <td id="LC382" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#####################################  Install for Centos/Redhat 6  ##############################################</span></td>
+      </tr>
+      <tr>
+        <td id="L383" class="blob-num js-line-number" data-line-number="383"></td>
+        <td id="LC383" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L384" class="blob-num js-line-number" data-line-number="384"></td>
+        <td id="LC384" class="blob-code blob-code-inner js-file-line">		webdir=/var/www/html</td>
+      </tr>
+      <tr>
+        <td id="L385" class="blob-num js-line-number" data-line-number="385"></td>
+        <td id="LC385" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L386" class="blob-num js-line-number" data-line-number="386"></td>
+        <td id="LC386" class="blob-code blob-code-inner js-file-line"><span class="pl-c">##TODO make sure the repo doesnt exhist isnt already in there</span></td>
+      </tr>
+      <tr>
+        <td id="L387" class="blob-num js-line-number" data-line-number="387"></td>
+        <td id="LC387" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L388" class="blob-num js-line-number" data-line-number="388"></td>
+        <td id="LC388" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Allow us to get the mysql engine</span></td>
+      </tr>
+      <tr>
+        <td id="L389" class="blob-num js-line-number" data-line-number="389"></td>
+        <td id="LC389" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L390" class="blob-num js-line-number" data-line-number="390"></td>
+        <td id="LC390" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Adding IUS, epel-release and mariaDB repos.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L391" class="blob-num js-line-number" data-line-number="391"></td>
+        <td id="LC391" class="blob-code blob-code-inner js-file-line">		mariadbRepo=/etc/yum.repos.d/MariaDB.repo</td>
+      </tr>
+      <tr>
+        <td id="L392" class="blob-num js-line-number" data-line-number="392"></td>
+        <td id="LC392" class="blob-code blob-code-inner js-file-line">		touch <span class="pl-smi">$mariadbRepo</span></td>
+      </tr>
+      <tr>
+        <td id="L393" class="blob-num js-line-number" data-line-number="393"></td>
+        <td id="LC393" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>[mariadb]<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L394" class="blob-num js-line-number" data-line-number="394"></td>
+        <td id="LC394" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>name = MariaDB<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L395" class="blob-num js-line-number" data-line-number="395"></td>
+        <td id="LC395" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>baseurl = http://yum.mariadb.org/10.0/centos6-amd64<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L396" class="blob-num js-line-number" data-line-number="396"></td>
+        <td id="LC396" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L397" class="blob-num js-line-number" data-line-number="397"></td>
+        <td id="LC397" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>gpgcheck=1<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L398" class="blob-num js-line-number" data-line-number="398"></td>
+        <td id="LC398" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$mariadbRepo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>enable=1<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L399" class="blob-num js-line-number" data-line-number="399"></td>
+        <td id="LC399" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L400" class="blob-num js-line-number" data-line-number="400"></td>
+        <td id="LC400" class="blob-code blob-code-inner js-file-line">		yum -y install wget epel-release <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L401" class="blob-num js-line-number" data-line-number="401"></td>
+        <td id="LC401" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://centos6.iuscommunity.org/ius-release.rpm <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L402" class="blob-num js-line-number" data-line-number="402"></td>
+        <td id="LC402" class="blob-code blob-code-inner js-file-line">		rpm -Uvh <span class="pl-smi">$tmp</span>/ius-release<span class="pl-k">*</span>.rpm <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L403" class="blob-num js-line-number" data-line-number="403"></td>
+        <td id="LC403" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L404" class="blob-num js-line-number" data-line-number="404"></td>
+        <td id="LC404" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L405" class="blob-num js-line-number" data-line-number="405"></td>
+        <td id="LC405" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install PHP and other needed stuff.</span></td>
+      </tr>
+      <tr>
+        <td id="L406" class="blob-num js-line-number" data-line-number="406"></td>
+        <td id="LC406" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing PHP and other needed stuff<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L407" class="blob-num js-line-number" data-line-number="407"></td>
+        <td id="LC407" class="blob-code blob-code-inner js-file-line">		PACKAGES=<span class="pl-s"><span class="pl-pds">&quot;</span>httpd MariaDB-server git unzip php56u php56u-mysqlnd php56u-bcmath php56u-cli php56u-common php56u-embedded php56u-gd php56u-mbstring php56u-mcrypt php56u-ldap<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L408" class="blob-num js-line-number" data-line-number="408"></td>
+        <td id="LC408" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L409" class="blob-num js-line-number" data-line-number="409"></td>
+        <td id="LC409" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">for</span> <span class="pl-smi">p</span> <span class="pl-k">in</span> <span class="pl-smi">$PACKAGES</span><span class="pl-k">;</span><span class="pl-k">do</span></td>
+      </tr>
+      <tr>
+        <td id="L410" class="blob-num js-line-number" data-line-number="410"></td>
+        <td id="LC410" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">if</span> isinstalled <span class="pl-smi">$p</span><span class="pl-k">;</span><span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L411" class="blob-num js-line-number" data-line-number="411"></td>
+        <td id="LC411" class="blob-code blob-code-inner js-file-line">				<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span> ##<span class="pl-pds">&quot;</span></span> <span class="pl-smi">$p</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Installed<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L412" class="blob-num js-line-number" data-line-number="412"></td>
+        <td id="LC412" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L413" class="blob-num js-line-number" data-line-number="413"></td>
+        <td id="LC413" class="blob-code blob-code-inner js-file-line">				<span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span> ##<span class="pl-pds">&quot;</span></span> <span class="pl-smi">$p</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Installing... <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L414" class="blob-num js-line-number" data-line-number="414"></td>
+        <td id="LC414" class="blob-code blob-code-inner js-file-line">				yum -y install <span class="pl-smi">$p</span> <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L415" class="blob-num js-line-number" data-line-number="415"></td>
+        <td id="LC415" class="blob-code blob-code-inner js-file-line">				<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L416" class="blob-num js-line-number" data-line-number="416"></td>
+        <td id="LC416" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L417" class="blob-num js-line-number" data-line-number="417"></td>
+        <td id="LC417" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">done</span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L418" class="blob-num js-line-number" data-line-number="418"></td>
+        <td id="LC418" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L419" class="blob-num js-line-number" data-line-number="419"></td>
+        <td id="LC419" class="blob-code blob-code-inner js-file-line">        <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L420" class="blob-num js-line-number" data-line-number="420"></td>
+        <td id="LC420" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Downloading Snipe-IT from github and putting it in the web directory.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L421" class="blob-num js-line-number" data-line-number="421"></td>
+        <td id="LC421" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L422" class="blob-num js-line-number" data-line-number="422"></td>
+        <td id="LC422" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://github.com/snipe/snipe-it/archive/<span class="pl-smi">$file</span> <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L423" class="blob-num js-line-number" data-line-number="423"></td>
+        <td id="LC423" class="blob-code blob-code-inner js-file-line">		unzip -qo <span class="pl-smi">$tmp</span>/<span class="pl-smi">$file</span> -d <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L424" class="blob-num js-line-number" data-line-number="424"></td>
+        <td id="LC424" class="blob-code blob-code-inner js-file-line">		cp -R <span class="pl-smi">$tmp</span>/<span class="pl-smi">$fileName</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L425" class="blob-num js-line-number" data-line-number="425"></td>
+        <td id="LC425" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L426" class="blob-num js-line-number" data-line-number="426"></td>
+        <td id="LC426" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Make mariaDB start on boot and restart the daemon</span></td>
+      </tr>
+      <tr>
+        <td id="L427" class="blob-num js-line-number" data-line-number="427"></td>
+        <td id="LC427" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Starting the mariaDB server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L428" class="blob-num js-line-number" data-line-number="428"></td>
+        <td id="LC428" class="blob-code blob-code-inner js-file-line">		chkconfig mysql on</td>
+      </tr>
+      <tr>
+        <td id="L429" class="blob-num js-line-number" data-line-number="429"></td>
+        <td id="LC429" class="blob-code blob-code-inner js-file-line">		/sbin/service mysql start</td>
+      </tr>
+      <tr>
+        <td id="L430" class="blob-num js-line-number" data-line-number="430"></td>
+        <td id="LC430" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L431" class="blob-num js-line-number" data-line-number="431"></td>
+        <td id="LC431" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Securing mariaDB server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L432" class="blob-num js-line-number" data-line-number="432"></td>
+        <td id="LC432" class="blob-code blob-code-inner js-file-line">		/usr/bin/mysql_secure_installation</td>
+      </tr>
+      <tr>
+        <td id="L433" class="blob-num js-line-number" data-line-number="433"></td>
+        <td id="LC433" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L434" class="blob-num js-line-number" data-line-number="434"></td>
+        <td id="LC434" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Creating MySQL Database/User.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L435" class="blob-num js-line-number" data-line-number="435"></td>
+        <td id="LC435" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Please Input your MySQL/MariaDB root password: <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L436" class="blob-num js-line-number" data-line-number="436"></td>
+        <td id="LC436" class="blob-code blob-code-inner js-file-line">		mysql -u root -p <span class="pl-k">&lt;</span> <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L437" class="blob-num js-line-number" data-line-number="437"></td>
+        <td id="LC437" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L438" class="blob-num js-line-number" data-line-number="438"></td>
+        <td id="LC438" class="blob-code blob-code-inner js-file-line"><span class="pl-c">##TODO make sure the apachefile doesnt exhist isnt already in there</span></td>
+      </tr>
+      <tr>
+        <td id="L439" class="blob-num js-line-number" data-line-number="439"></td>
+        <td id="LC439" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Create the new virtual host in Apache and enable rewrite</span></td>
+      </tr>
+      <tr>
+        <td id="L440" class="blob-num js-line-number" data-line-number="440"></td>
+        <td id="LC440" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Creating the new virtual host in Apache.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L441" class="blob-num js-line-number" data-line-number="441"></td>
+        <td id="LC441" class="blob-code blob-code-inner js-file-line">		apachefile=/etc/httpd/conf.d/<span class="pl-smi">$name</span>.conf</td>
+      </tr>
+      <tr>
+        <td id="L442" class="blob-num js-line-number" data-line-number="442"></td>
+        <td id="LC442" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L443" class="blob-num js-line-number" data-line-number="443"></td>
+        <td id="LC443" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L444" class="blob-num js-line-number" data-line-number="444"></td>
+        <td id="LC444" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L445" class="blob-num js-line-number" data-line-number="445"></td>
+        <td id="LC445" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L446" class="blob-num js-line-number" data-line-number="446"></td>
+        <td id="LC446" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;VirtualHost *:80&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L447" class="blob-num js-line-number" data-line-number="447"></td>
+        <td id="LC447" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>ServerAdmin webmaster@localhost<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L448" class="blob-num js-line-number" data-line-number="448"></td>
+        <td id="LC448" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    &lt;Directory <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L449" class="blob-num js-line-number" data-line-number="449"></td>
+        <td id="LC449" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Allow From All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L450" class="blob-num js-line-number" data-line-number="450"></td>
+        <td id="LC450" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        AllowOverride All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L451" class="blob-num js-line-number" data-line-number="451"></td>
+        <td id="LC451" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Options +Indexes<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L452" class="blob-num js-line-number" data-line-number="452"></td>
+        <td id="LC452" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>   &lt;/Directory&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L453" class="blob-num js-line-number" data-line-number="453"></td>
+        <td id="LC453" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    DocumentRoot <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L454" class="blob-num js-line-number" data-line-number="454"></td>
+        <td id="LC454" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    ServerName <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L455" class="blob-num js-line-number" data-line-number="455"></td>
+        <td id="LC455" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        ErrorLog /var/log/httpd/snipeIT.error.log<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L456" class="blob-num js-line-number" data-line-number="456"></td>
+        <td id="LC456" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        CustomLog /var/log/access.log combined<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L457" class="blob-num js-line-number" data-line-number="457"></td>
+        <td id="LC457" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;/VirtualHost&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L458" class="blob-num js-line-number" data-line-number="458"></td>
+        <td id="LC458" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L459" class="blob-num js-line-number" data-line-number="459"></td>
+        <td id="LC459" class="blob-code blob-code-inner js-file-line"><span class="pl-c">##TODO make sure hosts file doesnt already contain this info</span></td>
+      </tr>
+      <tr>
+        <td id="L460" class="blob-num js-line-number" data-line-number="460"></td>
+        <td id="LC460" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Setting up hosts file.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L461" class="blob-num js-line-number" data-line-number="461"></td>
+        <td id="LC461" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$hosts</span> <span class="pl-s"><span class="pl-pds">&quot;</span>127.0.0.1 <span class="pl-smi">$hostname</span> <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L462" class="blob-num js-line-number" data-line-number="462"></td>
+        <td id="LC462" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L463" class="blob-num js-line-number" data-line-number="463"></td>
+        <td id="LC463" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Make apache start on boot and restart the daemon</span></td>
+      </tr>
+      <tr>
+        <td id="L464" class="blob-num js-line-number" data-line-number="464"></td>
+        <td id="LC464" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Starting the apache server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L465" class="blob-num js-line-number" data-line-number="465"></td>
+        <td id="LC465" class="blob-code blob-code-inner js-file-line">		chkconfig httpd on</td>
+      </tr>
+      <tr>
+        <td id="L466" class="blob-num js-line-number" data-line-number="466"></td>
+        <td id="LC466" class="blob-code blob-code-inner js-file-line">		/sbin/service httpd start</td>
+      </tr>
+      <tr>
+        <td id="L467" class="blob-num js-line-number" data-line-number="467"></td>
+        <td id="LC467" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L468" class="blob-num js-line-number" data-line-number="468"></td>
+        <td id="LC468" class="blob-code blob-code-inner js-file-line">		tzone=<span class="pl-s"><span class="pl-pds">$(</span>grep ZONE /etc/sysconfig/clock <span class="pl-k">|</span> tr -d <span class="pl-s"><span class="pl-pds">&#39;</span>&quot;<span class="pl-pds">&#39;</span></span> <span class="pl-k">|</span> sed <span class="pl-s"><span class="pl-pds">&#39;</span>s/ZONE=//g<span class="pl-pds">&#39;</span></span><span class="pl-pds">)</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L469" class="blob-num js-line-number" data-line-number="469"></td>
+        <td id="LC469" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>## Configuring .env file.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L470" class="blob-num js-line-number" data-line-number="470"></td>
+        <td id="LC470" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L471" class="blob-num js-line-number" data-line-number="471"></td>
+        <td id="LC471" class="blob-code blob-code-inner js-file-line">		cat <span class="pl-k">&gt;</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/.env <span class="pl-s"><span class="pl-k">&lt;&lt;</span>-<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L472" class="blob-num js-line-number" data-line-number="472"></td>
+        <td id="LC472" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		#Created By Snipe-it Installer</span></td>
+      </tr>
+      <tr>
+        <td id="L473" class="blob-num js-line-number" data-line-number="473"></td>
+        <td id="LC473" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_TIMEZONE=$tzone</span></td>
+      </tr>
+      <tr>
+        <td id="L474" class="blob-num js-line-number" data-line-number="474"></td>
+        <td id="LC474" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_HOST=localhost</span></td>
+      </tr>
+      <tr>
+        <td id="L475" class="blob-num js-line-number" data-line-number="475"></td>
+        <td id="LC475" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DATABASE=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L476" class="blob-num js-line-number" data-line-number="476"></td>
+        <td id="LC476" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_USERNAME=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L477" class="blob-num js-line-number" data-line-number="477"></td>
+        <td id="LC477" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_PASSWORD=$mysqluserpw</span></td>
+      </tr>
+      <tr>
+        <td id="L478" class="blob-num js-line-number" data-line-number="478"></td>
+        <td id="LC478" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_URL=http://$fqdn</span></td>
+      </tr>
+      <tr>
+        <td id="L479" class="blob-num js-line-number" data-line-number="479"></td>
+        <td id="LC479" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_KEY=$random32</span></td>
+      </tr>
+      <tr>
+        <td id="L480" class="blob-num js-line-number" data-line-number="480"></td>
+        <td id="LC480" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DUMP_PATH=&#39;/usr/bin&#39;</span></td>
+      </tr>
+      <tr>
+        <td id="L481" class="blob-num js-line-number" data-line-number="481"></td>
+        <td id="LC481" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L482" class="blob-num js-line-number" data-line-number="482"></td>
+        <td id="LC482" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L483" class="blob-num js-line-number" data-line-number="483"></td>
+        <td id="LC483" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L484" class="blob-num js-line-number" data-line-number="484"></td>
+        <td id="LC484" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install / configure composer</span></td>
+      </tr>
+      <tr>
+        <td id="L485" class="blob-num js-line-number" data-line-number="485"></td>
+        <td id="LC485" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Configure composer<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L486" class="blob-num js-line-number" data-line-number="486"></td>
+        <td id="LC486" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">cd</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L487" class="blob-num js-line-number" data-line-number="487"></td>
+        <td id="LC487" class="blob-code blob-code-inner js-file-line">		curl -sS https://getcomposer.org/installer <span class="pl-k">|</span> php</td>
+      </tr>
+      <tr>
+        <td id="L488" class="blob-num js-line-number" data-line-number="488"></td>
+        <td id="LC488" class="blob-code blob-code-inner js-file-line">		php composer.phar install --no-dev --prefer-source</td>
+      </tr>
+      <tr>
+        <td id="L489" class="blob-num js-line-number" data-line-number="489"></td>
+        <td id="LC489" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L490" class="blob-num js-line-number" data-line-number="490"></td>
+        <td id="LC490" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Change permissions on directories</span></td>
+      </tr>
+      <tr>
+        <td id="L491" class="blob-num js-line-number" data-line-number="491"></td>
+        <td id="LC491" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage</td>
+      </tr>
+      <tr>
+        <td id="L492" class="blob-num js-line-number" data-line-number="492"></td>
+        <td id="LC492" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public/uploads</td>
+      </tr>
+      <tr>
+        <td id="L493" class="blob-num js-line-number" data-line-number="493"></td>
+        <td id="LC493" class="blob-code blob-code-inner js-file-line">		sudo chown -R apache:apache <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L494" class="blob-num js-line-number" data-line-number="494"></td>
+        <td id="LC494" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L495" class="blob-num js-line-number" data-line-number="495"></td>
+        <td id="LC495" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#TODO detect if SELinux is enabled to decide what to do.</span></td>
+      </tr>
+      <tr>
+        <td id="L496" class="blob-num js-line-number" data-line-number="496"></td>
+        <td id="LC496" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/</span></td>
+      </tr>
+      <tr>
+        <td id="L497" class="blob-num js-line-number" data-line-number="497"></td>
+        <td id="LC497" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L498" class="blob-num js-line-number" data-line-number="498"></td>
+        <td id="LC498" class="blob-code blob-code-inner js-file-line">    <span class="pl-c">#Check if iptables is running</span></td>
+      </tr>
+      <tr>
+        <td id="L499" class="blob-num js-line-number" data-line-number="499"></td>
+        <td id="LC499" class="blob-code blob-code-inner js-file-line">    /sbin/service iptables status <span class="pl-k">&gt;</span>/dev/null <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L500" class="blob-num js-line-number" data-line-number="500"></td>
+        <td id="LC500" class="blob-code blob-code-inner js-file-line">    <span class="pl-k">if</span> [ <span class="pl-smi">$?</span> <span class="pl-k">=</span> 0 ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L501" class="blob-num js-line-number" data-line-number="501"></td>
+        <td id="LC501" class="blob-code blob-code-inner js-file-line">      <span class="pl-c">#Open http/https port</span></td>
+      </tr>
+      <tr>
+        <td id="L502" class="blob-num js-line-number" data-line-number="502"></td>
+        <td id="LC502" class="blob-code blob-code-inner js-file-line">      iptables -I INPUT 1 -p tcp -m tcp --dport 80 -j ACCEPT</td>
+      </tr>
+      <tr>
+        <td id="L503" class="blob-num js-line-number" data-line-number="503"></td>
+        <td id="LC503" class="blob-code blob-code-inner js-file-line">      iptables -I INPUT 1 -p tcp -m tcp --dport 443 -j ACCEPT</td>
+      </tr>
+      <tr>
+        <td id="L504" class="blob-num js-line-number" data-line-number="504"></td>
+        <td id="LC504" class="blob-code blob-code-inner js-file-line">      <span class="pl-c">#Save iptables</span></td>
+      </tr>
+      <tr>
+        <td id="L505" class="blob-num js-line-number" data-line-number="505"></td>
+        <td id="LC505" class="blob-code blob-code-inner js-file-line">      service iptables save</td>
+      </tr>
+      <tr>
+        <td id="L506" class="blob-num js-line-number" data-line-number="506"></td>
+        <td id="LC506" class="blob-code blob-code-inner js-file-line">    <span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L507" class="blob-num js-line-number" data-line-number="507"></td>
+        <td id="LC507" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L508" class="blob-num js-line-number" data-line-number="508"></td>
+        <td id="LC508" class="blob-code blob-code-inner js-file-line">		service httpd restart</td>
+      </tr>
+      <tr>
+        <td id="L509" class="blob-num js-line-number" data-line-number="509"></td>
+        <td id="LC509" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L510" class="blob-num js-line-number" data-line-number="510"></td>
+        <td id="LC510" class="blob-code blob-code-inner js-file-line">	<span class="pl-k">elif</span> [ <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-smi">$version</span><span class="pl-pds">&quot;</span></span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>7<span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L511" class="blob-num js-line-number" data-line-number="511"></td>
+        <td id="LC511" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#####################################  Install for Centos/Redhat 7  ##############################################</span></td>
+      </tr>
+      <tr>
+        <td id="L512" class="blob-num js-line-number" data-line-number="512"></td>
+        <td id="LC512" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L513" class="blob-num js-line-number" data-line-number="513"></td>
+        <td id="LC513" class="blob-code blob-code-inner js-file-line">		webdir=/var/www/html</td>
+      </tr>
+      <tr>
+        <td id="L514" class="blob-num js-line-number" data-line-number="514"></td>
+        <td id="LC514" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L515" class="blob-num js-line-number" data-line-number="515"></td>
+        <td id="LC515" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Allow us to get the mysql engine</span></td>
+      </tr>
+      <tr>
+        <td id="L516" class="blob-num js-line-number" data-line-number="516"></td>
+        <td id="LC516" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L517" class="blob-num js-line-number" data-line-number="517"></td>
+        <td id="LC517" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Add IUS, epel-release and mariaDB repos.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L518" class="blob-num js-line-number" data-line-number="518"></td>
+        <td id="LC518" class="blob-code blob-code-inner js-file-line">		yum -y install wget epel-release <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L519" class="blob-num js-line-number" data-line-number="519"></td>
+        <td id="LC519" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://centos7.iuscommunity.org/ius-release.rpm <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L520" class="blob-num js-line-number" data-line-number="520"></td>
+        <td id="LC520" class="blob-code blob-code-inner js-file-line">		rpm -Uvh <span class="pl-smi">$tmp</span>/ius-release<span class="pl-k">*</span>.rpm <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L521" class="blob-num js-line-number" data-line-number="521"></td>
+        <td id="LC521" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L522" class="blob-num js-line-number" data-line-number="522"></td>
+        <td id="LC522" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install PHP and other needed stuff.</span></td>
+      </tr>
+      <tr>
+        <td id="L523" class="blob-num js-line-number" data-line-number="523"></td>
+        <td id="LC523" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Installing PHP and other needed stuff<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L524" class="blob-num js-line-number" data-line-number="524"></td>
+        <td id="LC524" class="blob-code blob-code-inner js-file-line">		PACKAGES=<span class="pl-s"><span class="pl-pds">&quot;</span>httpd mariadb-server git unzip php56u php56u-mysqlnd php56u-bcmath php56u-cli php56u-common php56u-embedded php56u-gd php56u-mbstring php56u-mcrypt php56u-ldap<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L525" class="blob-num js-line-number" data-line-number="525"></td>
+        <td id="LC525" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L526" class="blob-num js-line-number" data-line-number="526"></td>
+        <td id="LC526" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">for</span> <span class="pl-smi">p</span> <span class="pl-k">in</span> <span class="pl-smi">$PACKAGES</span><span class="pl-k">;</span><span class="pl-k">do</span></td>
+      </tr>
+      <tr>
+        <td id="L527" class="blob-num js-line-number" data-line-number="527"></td>
+        <td id="LC527" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">if</span> isinstalled <span class="pl-smi">$p</span><span class="pl-k">;</span><span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L528" class="blob-num js-line-number" data-line-number="528"></td>
+        <td id="LC528" class="blob-code blob-code-inner js-file-line">				<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span> ##<span class="pl-pds">&quot;</span></span> <span class="pl-smi">$p</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Installed<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L529" class="blob-num js-line-number" data-line-number="529"></td>
+        <td id="LC529" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L530" class="blob-num js-line-number" data-line-number="530"></td>
+        <td id="LC530" class="blob-code blob-code-inner js-file-line">				<span class="pl-c1">echo</span> -n <span class="pl-s"><span class="pl-pds">&quot;</span> ##<span class="pl-pds">&quot;</span></span> <span class="pl-smi">$p</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Installing... <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L531" class="blob-num js-line-number" data-line-number="531"></td>
+        <td id="LC531" class="blob-code blob-code-inner js-file-line">				yum -y install <span class="pl-smi">$p</span> <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L532" class="blob-num js-line-number" data-line-number="532"></td>
+        <td id="LC532" class="blob-code blob-code-inner js-file-line">			<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L533" class="blob-num js-line-number" data-line-number="533"></td>
+        <td id="LC533" class="blob-code blob-code-inner js-file-line">			<span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L534" class="blob-num js-line-number" data-line-number="534"></td>
+        <td id="LC534" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">done</span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L535" class="blob-num js-line-number" data-line-number="535"></td>
+        <td id="LC535" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L536" class="blob-num js-line-number" data-line-number="536"></td>
+        <td id="LC536" class="blob-code blob-code-inner js-file-line">        <span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L537" class="blob-num js-line-number" data-line-number="537"></td>
+        <td id="LC537" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Downloading Snipe-IT from github and put it in the web directory.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L538" class="blob-num js-line-number" data-line-number="538"></td>
+        <td id="LC538" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L539" class="blob-num js-line-number" data-line-number="539"></td>
+        <td id="LC539" class="blob-code blob-code-inner js-file-line">		wget -P <span class="pl-smi">$tmp</span>/ https://github.com/snipe/snipe-it/archive/<span class="pl-smi">$file</span> <span class="pl-k">&gt;&gt;</span> /var/log/snipeit-install.log <span class="pl-k">2&gt;&amp;1</span></td>
+      </tr>
+      <tr>
+        <td id="L540" class="blob-num js-line-number" data-line-number="540"></td>
+        <td id="LC540" class="blob-code blob-code-inner js-file-line">		unzip -qo <span class="pl-smi">$tmp</span>/<span class="pl-smi">$file</span> -d <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L541" class="blob-num js-line-number" data-line-number="541"></td>
+        <td id="LC541" class="blob-code blob-code-inner js-file-line">		cp -R <span class="pl-smi">$tmp</span>/<span class="pl-smi">$fileName</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L542" class="blob-num js-line-number" data-line-number="542"></td>
+        <td id="LC542" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L543" class="blob-num js-line-number" data-line-number="543"></td>
+        <td id="LC543" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Make mariaDB start on boot and restart the daemon</span></td>
+      </tr>
+      <tr>
+        <td id="L544" class="blob-num js-line-number" data-line-number="544"></td>
+        <td id="LC544" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Starting the mariaDB server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L545" class="blob-num js-line-number" data-line-number="545"></td>
+        <td id="LC545" class="blob-code blob-code-inner js-file-line">		systemctl <span class="pl-c1">enable</span> mariadb.service</td>
+      </tr>
+      <tr>
+        <td id="L546" class="blob-num js-line-number" data-line-number="546"></td>
+        <td id="LC546" class="blob-code blob-code-inner js-file-line">		systemctl start mariadb.service</td>
+      </tr>
+      <tr>
+        <td id="L547" class="blob-num js-line-number" data-line-number="547"></td>
+        <td id="LC547" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L548" class="blob-num js-line-number" data-line-number="548"></td>
+        <td id="LC548" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Securing mariaDB server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L549" class="blob-num js-line-number" data-line-number="549"></td>
+        <td id="LC549" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L550" class="blob-num js-line-number" data-line-number="550"></td>
+        <td id="LC550" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L551" class="blob-num js-line-number" data-line-number="551"></td>
+        <td id="LC551" class="blob-code blob-code-inner js-file-line">		/usr/bin/mysql_secure_installation</td>
+      </tr>
+      <tr>
+        <td id="L552" class="blob-num js-line-number" data-line-number="552"></td>
+        <td id="LC552" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L553" class="blob-num js-line-number" data-line-number="553"></td>
+        <td id="LC553" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Creating MySQL Database/User.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L554" class="blob-num js-line-number" data-line-number="554"></td>
+        <td id="LC554" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Please Input your MySQL/MariaDB root password <span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L555" class="blob-num js-line-number" data-line-number="555"></td>
+        <td id="LC555" class="blob-code blob-code-inner js-file-line">		mysql -u root -p <span class="pl-k">&lt;</span> <span class="pl-smi">$dbsetup</span></td>
+      </tr>
+      <tr>
+        <td id="L556" class="blob-num js-line-number" data-line-number="556"></td>
+        <td id="LC556" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L557" class="blob-num js-line-number" data-line-number="557"></td>
+        <td id="LC557" class="blob-code blob-code-inner js-file-line"><span class="pl-c">##TODO make sure the apachefile doesnt exhist isnt already in there</span></td>
+      </tr>
+      <tr>
+        <td id="L558" class="blob-num js-line-number" data-line-number="558"></td>
+        <td id="LC558" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Create the new virtual host in Apache and enable rewrite</span></td>
+      </tr>
+      <tr>
+        <td id="L559" class="blob-num js-line-number" data-line-number="559"></td>
+        <td id="LC559" class="blob-code blob-code-inner js-file-line">		apachefile=/etc/httpd/conf.d/<span class="pl-smi">$name</span>.conf</td>
+      </tr>
+      <tr>
+        <td id="L560" class="blob-num js-line-number" data-line-number="560"></td>
+        <td id="LC560" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L561" class="blob-num js-line-number" data-line-number="561"></td>
+        <td id="LC561" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Creating the new virtual host in Apache.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L562" class="blob-num js-line-number" data-line-number="562"></td>
+        <td id="LC562" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L563" class="blob-num js-line-number" data-line-number="563"></td>
+        <td id="LC563" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L564" class="blob-num js-line-number" data-line-number="564"></td>
+        <td id="LC564" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>LoadModule rewrite_module modules/mod_rewrite.so<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L565" class="blob-num js-line-number" data-line-number="565"></td>
+        <td id="LC565" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L566" class="blob-num js-line-number" data-line-number="566"></td>
+        <td id="LC566" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;VirtualHost *:80&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L567" class="blob-num js-line-number" data-line-number="567"></td>
+        <td id="LC567" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>ServerAdmin webmaster@localhost<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L568" class="blob-num js-line-number" data-line-number="568"></td>
+        <td id="LC568" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    &lt;Directory <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L569" class="blob-num js-line-number" data-line-number="569"></td>
+        <td id="LC569" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Allow From All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L570" class="blob-num js-line-number" data-line-number="570"></td>
+        <td id="LC570" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        AllowOverride All<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L571" class="blob-num js-line-number" data-line-number="571"></td>
+        <td id="LC571" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        Options +Indexes<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L572" class="blob-num js-line-number" data-line-number="572"></td>
+        <td id="LC572" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>   &lt;/Directory&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L573" class="blob-num js-line-number" data-line-number="573"></td>
+        <td id="LC573" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    DocumentRoot <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L574" class="blob-num js-line-number" data-line-number="574"></td>
+        <td id="LC574" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>    ServerName <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L575" class="blob-num js-line-number" data-line-number="575"></td>
+        <td id="LC575" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        ErrorLog /var/log/httpd/snipeIT.error.log<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L576" class="blob-num js-line-number" data-line-number="576"></td>
+        <td id="LC576" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>        CustomLog /var/log/access.log combined<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L577" class="blob-num js-line-number" data-line-number="577"></td>
+        <td id="LC577" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$apachefile</span> <span class="pl-s"><span class="pl-pds">&quot;</span>&lt;/VirtualHost&gt;<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L578" class="blob-num js-line-number" data-line-number="578"></td>
+        <td id="LC578" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L579" class="blob-num js-line-number" data-line-number="579"></td>
+        <td id="LC579" class="blob-code blob-code-inner js-file-line"><span class="pl-c">##TODO make sure this isnt already in there</span></td>
+      </tr>
+      <tr>
+        <td id="L580" class="blob-num js-line-number" data-line-number="580"></td>
+        <td id="LC580" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Setting up hosts file.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L581" class="blob-num js-line-number" data-line-number="581"></td>
+        <td id="LC581" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-k">&gt;&gt;</span> <span class="pl-smi">$hosts</span> <span class="pl-s"><span class="pl-pds">&quot;</span>127.0.0.1 <span class="pl-smi">$hostname</span> <span class="pl-smi">$fqdn</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L582" class="blob-num js-line-number" data-line-number="582"></td>
+        <td id="LC582" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L583" class="blob-num js-line-number" data-line-number="583"></td>
+        <td id="LC583" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L584" class="blob-num js-line-number" data-line-number="584"></td>
+        <td id="LC584" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Starting the apache server.<span class="pl-pds">&quot;</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L585" class="blob-num js-line-number" data-line-number="585"></td>
+        <td id="LC585" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Make apache start on boot and restart the daemon</span></td>
+      </tr>
+      <tr>
+        <td id="L586" class="blob-num js-line-number" data-line-number="586"></td>
+        <td id="LC586" class="blob-code blob-code-inner js-file-line">		systemctl <span class="pl-c1">enable</span> httpd.service</td>
+      </tr>
+      <tr>
+        <td id="L587" class="blob-num js-line-number" data-line-number="587"></td>
+        <td id="LC587" class="blob-code blob-code-inner js-file-line">		systemctl restart httpd.service</td>
+      </tr>
+      <tr>
+        <td id="L588" class="blob-num js-line-number" data-line-number="588"></td>
+        <td id="LC588" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L589" class="blob-num js-line-number" data-line-number="589"></td>
+        <td id="LC589" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L590" class="blob-num js-line-number" data-line-number="590"></td>
+        <td id="LC590" class="blob-code blob-code-inner js-file-line">		tzone=<span class="pl-s"><span class="pl-pds">$(</span>timedatectl <span class="pl-k">|</span> gawk -F<span class="pl-s"><span class="pl-pds">&#39;</span>[: ]<span class="pl-pds">&#39;</span></span> <span class="pl-s"><span class="pl-pds">&#39;</span> $9 ~ /zone/ {print $11}<span class="pl-pds">&#39;</span></span><span class="pl-pds">)</span></span><span class="pl-k">;</span></td>
+      </tr>
+      <tr>
+        <td id="L591" class="blob-num js-line-number" data-line-number="591"></td>
+        <td id="LC591" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>## Configuring .env file.<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L592" class="blob-num js-line-number" data-line-number="592"></td>
+        <td id="LC592" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L593" class="blob-num js-line-number" data-line-number="593"></td>
+        <td id="LC593" class="blob-code blob-code-inner js-file-line">		cat <span class="pl-k">&gt;</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/.env <span class="pl-s"><span class="pl-k">&lt;&lt;</span>-<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L594" class="blob-num js-line-number" data-line-number="594"></td>
+        <td id="LC594" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		#Created By Snipe-it Installer</span></td>
+      </tr>
+      <tr>
+        <td id="L595" class="blob-num js-line-number" data-line-number="595"></td>
+        <td id="LC595" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_TIMEZONE=$tzone</span></td>
+      </tr>
+      <tr>
+        <td id="L596" class="blob-num js-line-number" data-line-number="596"></td>
+        <td id="LC596" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_HOST=localhost</span></td>
+      </tr>
+      <tr>
+        <td id="L597" class="blob-num js-line-number" data-line-number="597"></td>
+        <td id="LC597" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DATABASE=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L598" class="blob-num js-line-number" data-line-number="598"></td>
+        <td id="LC598" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_USERNAME=snipeit</span></td>
+      </tr>
+      <tr>
+        <td id="L599" class="blob-num js-line-number" data-line-number="599"></td>
+        <td id="LC599" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_PASSWORD=$mysqluserpw</span></td>
+      </tr>
+      <tr>
+        <td id="L600" class="blob-num js-line-number" data-line-number="600"></td>
+        <td id="LC600" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_URL=http://$fqdn</span></td>
+      </tr>
+      <tr>
+        <td id="L601" class="blob-num js-line-number" data-line-number="601"></td>
+        <td id="LC601" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		APP_KEY=$random32</span></td>
+      </tr>
+      <tr>
+        <td id="L602" class="blob-num js-line-number" data-line-number="602"></td>
+        <td id="LC602" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		DB_DUMP_PATH=&#39;/usr/bin&#39;</span></td>
+      </tr>
+      <tr>
+        <td id="L603" class="blob-num js-line-number" data-line-number="603"></td>
+        <td id="LC603" class="blob-code blob-code-inner js-file-line"><span class="pl-s">		<span class="pl-k">EOF</span></span></td>
+      </tr>
+      <tr>
+        <td id="L604" class="blob-num js-line-number" data-line-number="604"></td>
+        <td id="LC604" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L605" class="blob-num js-line-number" data-line-number="605"></td>
+        <td id="LC605" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># Change permissions on directories</span></td>
+      </tr>
+      <tr>
+        <td id="L606" class="blob-num js-line-number" data-line-number="606"></td>
+        <td id="LC606" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L607" class="blob-num js-line-number" data-line-number="607"></td>
+        <td id="LC607" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L608" class="blob-num js-line-number" data-line-number="608"></td>
+        <td id="LC608" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Install / configure composer</span></td>
+      </tr>
+      <tr>
+        <td id="L609" class="blob-num js-line-number" data-line-number="609"></td>
+        <td id="LC609" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">cd</span> <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L610" class="blob-num js-line-number" data-line-number="610"></td>
+        <td id="LC610" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L611" class="blob-num js-line-number" data-line-number="611"></td>
+        <td id="LC611" class="blob-code blob-code-inner js-file-line">		curl -sS https://getcomposer.org/installer <span class="pl-k">|</span> php</td>
+      </tr>
+      <tr>
+        <td id="L612" class="blob-num js-line-number" data-line-number="612"></td>
+        <td id="LC612" class="blob-code blob-code-inner js-file-line">		php composer.phar install --no-dev --prefer-source</td>
+      </tr>
+      <tr>
+        <td id="L613" class="blob-num js-line-number" data-line-number="613"></td>
+        <td id="LC613" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L614" class="blob-num js-line-number" data-line-number="614"></td>
+        <td id="LC614" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage</td>
+      </tr>
+      <tr>
+        <td id="L615" class="blob-num js-line-number" data-line-number="615"></td>
+        <td id="LC615" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/storage/private_uploads</td>
+      </tr>
+      <tr>
+        <td id="L616" class="blob-num js-line-number" data-line-number="616"></td>
+        <td id="LC616" class="blob-code blob-code-inner js-file-line">		sudo chmod -R 755 <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/public/uploads</td>
+      </tr>
+      <tr>
+        <td id="L617" class="blob-num js-line-number" data-line-number="617"></td>
+        <td id="LC617" class="blob-code blob-code-inner js-file-line">		sudo chown -R apache:apache <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span></td>
+      </tr>
+      <tr>
+        <td id="L618" class="blob-num js-line-number" data-line-number="618"></td>
+        <td id="LC618" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L619" class="blob-num js-line-number" data-line-number="619"></td>
+        <td id="LC619" class="blob-code blob-code-inner js-file-line">    <span class="pl-c">#Check if SELinux is enforcing</span></td>
+      </tr>
+      <tr>
+        <td id="L620" class="blob-num js-line-number" data-line-number="620"></td>
+        <td id="LC620" class="blob-code blob-code-inner js-file-line">    <span class="pl-k">if</span> [ <span class="pl-s"><span class="pl-pds">$(</span>getenforce<span class="pl-pds">)</span></span> <span class="pl-k">==</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Enforcing<span class="pl-pds">&quot;</span></span> ]<span class="pl-k">;</span> <span class="pl-k">then</span></td>
+      </tr>
+      <tr>
+        <td id="L621" class="blob-num js-line-number" data-line-number="621"></td>
+        <td id="LC621" class="blob-code blob-code-inner js-file-line">      <span class="pl-c">#Required for ldap integration</span></td>
+      </tr>
+      <tr>
+        <td id="L622" class="blob-num js-line-number" data-line-number="622"></td>
+        <td id="LC622" class="blob-code blob-code-inner js-file-line">      setsebool -P httpd_can_connect_ldap on</td>
+      </tr>
+      <tr>
+        <td id="L623" class="blob-num js-line-number" data-line-number="623"></td>
+        <td id="LC623" class="blob-code blob-code-inner js-file-line">      <span class="pl-c">#Sets SELinux context type so that scripts running in the web server process are allowed read/write access</span></td>
+      </tr>
+      <tr>
+        <td id="L624" class="blob-num js-line-number" data-line-number="624"></td>
+        <td id="LC624" class="blob-code blob-code-inner js-file-line">      sudo chcon -R -h -t httpd_sys_script_rw_t <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/</td>
+      </tr>
+      <tr>
+        <td id="L625" class="blob-num js-line-number" data-line-number="625"></td>
+        <td id="LC625" class="blob-code blob-code-inner js-file-line">    <span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L626" class="blob-num js-line-number" data-line-number="626"></td>
+        <td id="LC626" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L627" class="blob-num js-line-number" data-line-number="627"></td>
+        <td id="LC627" class="blob-code blob-code-inner js-file-line"><span class="pl-c">#TODO detect if firewall is enabled to decide what to do</span></td>
+      </tr>
+      <tr>
+        <td id="L628" class="blob-num js-line-number" data-line-number="628"></td>
+        <td id="LC628" class="blob-code blob-code-inner js-file-line">		<span class="pl-c">#Add firewall exception/rules. Youll have to allow 443 if you want ssl connectivity.</span></td>
+      </tr>
+      <tr>
+        <td id="L629" class="blob-num js-line-number" data-line-number="629"></td>
+        <td id="LC629" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># chcon -R -h -t httpd_sys_script_rw_t $webdir/$name/</span></td>
+      </tr>
+      <tr>
+        <td id="L630" class="blob-num js-line-number" data-line-number="630"></td>
+        <td id="LC630" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># firewall-cmd --zone=public --add-port=80/tcp --permanent</span></td>
+      </tr>
+      <tr>
+        <td id="L631" class="blob-num js-line-number" data-line-number="631"></td>
+        <td id="LC631" class="blob-code blob-code-inner js-file-line">		<span class="pl-c"># firewall-cmd --reload</span></td>
+      </tr>
+      <tr>
+        <td id="L632" class="blob-num js-line-number" data-line-number="632"></td>
+        <td id="LC632" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L633" class="blob-num js-line-number" data-line-number="633"></td>
+        <td id="LC633" class="blob-code blob-code-inner js-file-line">		systemctl restart httpd.service</td>
+      </tr>
+      <tr>
+        <td id="L634" class="blob-num js-line-number" data-line-number="634"></td>
+        <td id="LC634" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L635" class="blob-num js-line-number" data-line-number="635"></td>
+        <td id="LC635" class="blob-code blob-code-inner js-file-line">	<span class="pl-k">else</span></td>
+      </tr>
+      <tr>
+        <td id="L636" class="blob-num js-line-number" data-line-number="636"></td>
+        <td id="LC636" class="blob-code blob-code-inner js-file-line">		<span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>Unable to Handle Centos Version #.  Version Found: <span class="pl-pds">&quot;</span></span> <span class="pl-smi">$version</span></td>
+      </tr>
+      <tr>
+        <td id="L637" class="blob-num js-line-number" data-line-number="637"></td>
+        <td id="LC637" class="blob-code blob-code-inner js-file-line">		<span class="pl-k">return</span> 1</td>
+      </tr>
+      <tr>
+        <td id="L638" class="blob-num js-line-number" data-line-number="638"></td>
+        <td id="LC638" class="blob-code blob-code-inner js-file-line">	<span class="pl-k">fi</span></td>
+      </tr>
+      <tr>
+        <td id="L639" class="blob-num js-line-number" data-line-number="639"></td>
+        <td id="LC639" class="blob-code blob-code-inner js-file-line"><span class="pl-k">esac</span></td>
+      </tr>
+      <tr>
+        <td id="L640" class="blob-num js-line-number" data-line-number="640"></td>
+        <td id="LC640" class="blob-code blob-code-inner js-file-line">
+</td>
+      </tr>
+      <tr>
+        <td id="L641" class="blob-num js-line-number" data-line-number="641"></td>
+        <td id="LC641" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L642" class="blob-num js-line-number" data-line-number="642"></td>
+        <td id="LC642" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  ***If you want mail capabilities, edit <span class="pl-smi">$webdir</span>/<span class="pl-smi">$name</span>/.env and edit based on .env.example***<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L643" class="blob-num js-line-number" data-line-number="643"></td>
+        <td id="LC643" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L644" class="blob-num js-line-number" data-line-number="644"></td>
+        <td id="LC644" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>  ***Open http://<span class="pl-smi">$fqdn</span> to login to Snipe-IT.***<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L645" class="blob-num js-line-number" data-line-number="645"></td>
+        <td id="LC645" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L646" class="blob-num js-line-number" data-line-number="646"></td>
+        <td id="LC646" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span><span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L647" class="blob-num js-line-number" data-line-number="647"></td>
+        <td id="LC647" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Cleaning up...<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L648" class="blob-num js-line-number" data-line-number="648"></td>
+        <td id="LC648" class="blob-code blob-code-inner js-file-line">rm -f snipeit.sh</td>
+      </tr>
+      <tr>
+        <td id="L649" class="blob-num js-line-number" data-line-number="649"></td>
+        <td id="LC649" class="blob-code blob-code-inner js-file-line">rm -f install.sh</td>
+      </tr>
+      <tr>
+        <td id="L650" class="blob-num js-line-number" data-line-number="650"></td>
+        <td id="LC650" class="blob-code blob-code-inner js-file-line">rm -rf <span class="pl-smi">$tmp</span>/</td>
+      </tr>
+      <tr>
+        <td id="L651" class="blob-num js-line-number" data-line-number="651"></td>
+        <td id="LC651" class="blob-code blob-code-inner js-file-line"><span class="pl-c1">echo</span> <span class="pl-s"><span class="pl-pds">&quot;</span>##  Done!<span class="pl-pds">&quot;</span></span></td>
+      </tr>
+      <tr>
+        <td id="L652" class="blob-num js-line-number" data-line-number="652"></td>
+        <td id="LC652" class="blob-code blob-code-inner js-file-line">sleep 1</td>
+      </tr>
+</table>
+
+  </div>
+
+</div>
+
+<button type="button" data-facebox="#jump-to-line" data-facebox-class="linejump" data-hotkey="l" class="d-none">Jump to Line</button>
+<div id="jump-to-line" style="display:none">
+  <!-- </textarea> --><!-- '"` --><form accept-charset="UTF-8" action="" class="js-jump-to-line-form" method="get"><div style="margin:0;padding:0;display:inline"><input name="utf8" type="hidden" value="&#x2713;" /></div>
+    <input class="form-control linejump-input js-jump-to-line-field" type="text" placeholder="Jump to line&hellip;" aria-label="Jump to line" autofocus>
+    <button type="submit" class="btn">Go</button>
+</form></div>
+
+  </div>
+  <div class="modal-backdrop js-touch-events"></div>
+</div>
+
+
+    </div>
+  </div>
+
+    </div>
+
+        <div class="container site-footer-container">
+  <div class="site-footer" role="contentinfo">
+    <ul class="site-footer-links float-right">
+        <li><a href="https://github.com/contact" data-ga-click="Footer, go to contact, text:contact">Contact GitHub</a></li>
+      <li><a href="https://developer.github.com" data-ga-click="Footer, go to api, text:api">API</a></li>
+      <li><a href="https://training.github.com" data-ga-click="Footer, go to training, text:training">Training</a></li>
+      <li><a href="https://shop.github.com" data-ga-click="Footer, go to shop, text:shop">Shop</a></li>
+        <li><a href="https://github.com/blog" data-ga-click="Footer, go to blog, text:blog">Blog</a></li>
+        <li><a href="https://github.com/about" data-ga-click="Footer, go to about, text:about">About</a></li>
+
+    </ul>
+
+    <a href="https://github.com" aria-label="Homepage" class="site-footer-mark" title="GitHub">
+      <svg aria-hidden="true" class="octicon octicon-mark-github" height="24" version="1.1" viewBox="0 0 16 16" width="24"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
+</a>
+    <ul class="site-footer-links">
+      <li>&copy; 2016 <span title="0.06805s from github-fe144-cp1-prd.iad.github.net">GitHub</span>, Inc.</li>
+        <li><a href="https://github.com/site/terms" data-ga-click="Footer, go to terms, text:terms">Terms</a></li>
+        <li><a href="https://github.com/site/privacy" data-ga-click="Footer, go to privacy, text:privacy">Privacy</a></li>
+        <li><a href="https://github.com/security" data-ga-click="Footer, go to security, text:security">Security</a></li>
+        <li><a href="https://status.github.com/" data-ga-click="Footer, go to status, text:status">Status</a></li>
+        <li><a href="https://help.github.com" data-ga-click="Footer, go to help, text:help">Help</a></li>
+    </ul>
+  </div>
+</div>
+
+
+
+    
+
+    <div id="ajax-error-message" class="ajax-error-message flash flash-error">
+      <svg aria-hidden="true" class="octicon octicon-alert" height="16" version="1.1" viewBox="0 0 16 16" width="16"><path d="M8.865 1.52c-.18-.31-.51-.5-.87-.5s-.69.19-.87.5L.275 13.5c-.18.31-.18.69 0 1 .19.31.52.5.87.5h13.7c.36 0 .69-.19.86-.5.17-.31.18-.69.01-1L8.865 1.52zM8.995 13h-2v-2h2v2zm0-3h-2V6h2v4z"></path></svg>
+      <button type="button" class="flash-close js-flash-close js-ajax-error-dismiss" aria-label="Dismiss error">
+        <svg aria-hidden="true" class="octicon octicon-x" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M7.48 8l3.75 3.75-1.48 1.48L6 9.48l-3.75 3.75-1.48-1.48L4.52 8 .77 4.25l1.48-1.48L6 6.52l3.75-3.75 1.48 1.48z"></path></svg>
+      </button>
+      You can't perform that action at this time.
+    </div>
+
+
+      <script crossorigin="anonymous" src="https://assets-cdn.github.com/assets/compat-40e365359d1c4db1e36a55be458e60f2b7c24d58b5a00ae13398480e7ba768e0.js"></script>
+      <script crossorigin="anonymous" src="https://assets-cdn.github.com/assets/frameworks-2c76cc192ef357ffd1604a67307c1426cfd7513a720b1a87d1f53eb24a928308.js"></script>
+      <script async="async" crossorigin="anonymous" src="https://assets-cdn.github.com/assets/github-e3e0a00b0eebdb706d96a48372bbe7b1c39467c3d6a985bedfad6ae75fddd20e.js"></script>
+      
+      
+      
+      
+      
+      
+    <div class="js-stale-session-flash stale-session-flash flash flash-warn flash-banner d-none">
+      <svg aria-hidden="true" class="octicon octicon-alert" height="16" version="1.1" viewBox="0 0 16 16" width="16"><path d="M8.865 1.52c-.18-.31-.51-.5-.87-.5s-.69.19-.87.5L.275 13.5c-.18.31-.18.69 0 1 .19.31.52.5.87.5h13.7c.36 0 .69-.19.86-.5.17-.31.18-.69.01-1L8.865 1.52zM8.995 13h-2v-2h2v2zm0-3h-2V6h2v4z"></path></svg>
+      <span class="signed-in-tab-flash">You signed in with another tab or window. <a href="">Reload</a> to refresh your session.</span>
+      <span class="signed-out-tab-flash">You signed out in another tab or window. <a href="">Reload</a> to refresh your session.</span>
+    </div>
+    <div class="facebox" id="facebox" style="display:none;">
+  <div class="facebox-popup">
+    <div class="facebox-content" role="dialog" aria-labelledby="facebox-header" aria-describedby="facebox-description">
+    </div>
+    <button type="button" class="facebox-close js-facebox-close" aria-label="Close modal">
+      <svg aria-hidden="true" class="octicon octicon-x" height="16" version="1.1" viewBox="0 0 12 16" width="12"><path d="M7.48 8l3.75 3.75-1.48 1.48L6 9.48l-3.75 3.75-1.48-1.48L4.52 8 .77 4.25l1.48-1.48L6 6.52l3.75-3.75 1.48 1.48z"></path></svg>
+    </button>
+  </div>
+</div>
+
+  </body>
+</html>
+
